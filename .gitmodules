@@ -1,0 +1,3 @@
+[submodule "Plugins/UnrealFastNoise"]
+	path = Plugins/UnrealFastNoise
+	url = https://github.com/midgen/UnrealFastNoise
