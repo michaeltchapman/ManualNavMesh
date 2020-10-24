@@ -10,9 +10,21 @@
 #include "NavigationSystem/Public/NavigationSystemTypes.h"
 #include "DrawDebugHelpers.h"
 #include "WorldMap.h"
+#include "RegionDistribution.h"
 #include "ManualNavmesh.h"
 
 DEFINE_LOG_CATEGORY(LogManualNavMesh)
+
+AManualDetourNavMesh::AManualDetourNavMesh()
+	: Super()
+{
+	DebugTile = FIntPoint(-1, -1);
+	bDebugDraw = false;
+	bNoPortals = false;
+	bNoFlags = false;
+	TileCount = 2;
+	GridSubdivisions = 2;
+}
 
 AManualDetourNavMesh* AManualDetourNavMesh::GetManualRecastNavMesh(UObject* Context)
 {
@@ -60,6 +72,14 @@ bool AManualDetourNavMesh::BuildManualNavMesh()
 	{
 		return false;
 	}
+
+	if (!SourceMap)
+	{
+		UE_LOG(LogManualNavMesh, Warning, TEXT("Cannot initialise manual nav mesh without a source WorldMap"));
+		return false;
+	}
+	Max = SourceMap->GetMax();
+	Min = SourceMap->GetMin();
 
 	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Initialising Nav Mesh Tile with Min %s, Max %s"), *Min.ToString(), *Max.ToString());
 	const float bmax[3] =
@@ -121,6 +141,13 @@ bool AManualDetourNavMesh::BuildManualNavMesh()
 	{
 		for (int x = 0; x < TileCount; ++x)
 		{
+#if WITH_EDITOR
+			if (bDebugDraw && DebugTile.X >= 0 && DebugTile.Y >= 0 && x != DebugTile.X && y != DebugTile.Y)
+			{
+				continue;
+			}
+#endif WITH_EDITOR
+
 			float TileBmin[3] = {
 				bmin[0] + x * TileSize,
 				bmin[1],
@@ -265,7 +292,18 @@ unsigned char* AManualDetourNavMesh::BuildTileMesh(dtNavMesh* TiledNavMesh, cons
 	TileParams.ch = CellHeight;
 	TileParams.buildBvTree = true;
 
-	MakeGridTile(TileParams, tx, ty);
+	if (!SourceMap)
+	{
+		return nullptr;
+	}
+
+	if (SourceMap->IsGrid())
+	{
+		MakeGridTile(TileParams, tx, ty);
+	}
+	else {
+		MakeTriangulationTile(TileParams, tx, ty, SourceMap->Coords, SourceMap->Triangles, SourceMap->HalfEdges);
+	}
 
 	if (TileParams.vertCount < 3)
 	{
@@ -585,12 +623,124 @@ int32 AManualDetourNavMesh::GetGridSubdivisions() const
 	return GridSubdivisions;
 }
 
-FVector AManualDetourNavMesh::GetMin() const
+void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty, const TArray<FVector2D>& Coords, const TArray<int32>& Triangles, const TArray<int32>& HalfEdges)
 {
-	return Min;
+	FBox2D Bounds = FBox2D(
+		FVector2D(-1.f * TileParams.bmax[0], -1.f * TileParams.bmax[2]),
+		FVector2D(-1.f * TileParams.bmin[0], -1.f * TileParams.bmin[2])
+	);
+
+	unsigned short CellsInTile = FMath::FloorToInt((Bounds.Max.X - Bounds.Min.X) / TileParams.cs);
+
+	TSet<int32> TileTriangles;
+
+	for (int32 i = 0; i < Triangles.Num() / 3; i++)
+	{
+		const FVector2D &A = Coords[Triangles[3 * i]];
+		const FVector2D &B = Coords[Triangles[3 * i+1]];
+		const FVector2D &C = Coords[Triangles[3 * i+2]];
+
+		// If there's a point in the bounds we know this triangle is relevant
+		if (Bounds.IsInside(A) || Bounds.IsInside(B) || Bounds.IsInside(C))
+		{
+			TileTriangles.Add(i);
+			continue;
+		}
+
+		// There could be 1 or more edges intersecting the box without any points
+		// being in the box
+		if (BoundsIntersectsSegment(Bounds, A, B) ||
+			BoundsIntersectsSegment(Bounds, B, C) ||
+			BoundsIntersectsSegment(Bounds, A, C))
+		{
+			TileTriangles.Add(i);
+		}
+	}
+
+	for (auto Tri : TileTriangles)
+	{
+		URegionDistribution::DrawTriangle(this, Tri, Coords, Triangles, HalfEdges, DebugThickness);
+	}
+
+	// Vertices per polygon
+	TileParams.nvp = 4;
+
+	// Vertices per polygon
+	TileParams.vertCount = 4;
+
+	// Number of polys in the tile
+	TileParams.polyCount = 1;
+
+	// These will be the same apart from fixed interval vs floating point.
+	unsigned short* verts = (unsigned short*)FMemory::Malloc(sizeof(unsigned short) * TileParams.vertCount * 3);
+
+	SetDetourVector(verts, FVector(Bounds.Min.X, Bounds.Min.Y, GetHeightAt(Bounds.Min.X, Bounds.Min.Y)), 0, TileParams);
+	SetDetourVector(verts, FVector(Bounds.Max.X, Bounds.Min.Y, GetHeightAt(Bounds.Max.X, Bounds.Min.Y)), 1, TileParams);
+	SetDetourVector(verts, FVector(Bounds.Max.X, Bounds.Max.Y, GetHeightAt(Bounds.Max.X, Bounds.Max.Y)), 2, TileParams);
+	SetDetourVector(verts, FVector(Bounds.Min.X, Bounds.Max.Y, GetHeightAt(Bounds.Min.X, Bounds.Max.Y)), 3, TileParams);
+
+	// This is list of vert indices with additional edge flags. 0xFF means no vert index and solid border edge
+	unsigned short* polys = (unsigned short*)FMemory::Malloc(sizeof(unsigned short) * TileParams.polyCount * TileParams.nvp * 2);
+	memset(polys, 0xff, sizeof(unsigned short) * TileParams.polyCount * TileParams.nvp * 2);
+	polys[0] = 0;
+	polys[1] = 1;
+	polys[2] = 2;
+	polys[3] = 3;
+
+	// This is area IDs, not the area of the polygon.
+	unsigned char* PolyAreas = (unsigned char*)FMemory::Malloc(sizeof(unsigned char) * TileParams.polyCount);
+	//FMemory::Memset(PolyAreas, 0xff, sizeof(unsigned char)*MaxPolys);
+	FMemory::Memset(PolyAreas, RC_WALKABLE_AREA, sizeof(unsigned char) * TileParams.polyCount);
+
+	// 0xff seems to mean walkable. 0x00 seems to mean impassable. Recast seems to generate 0x0001 but not sure
+	// what that means
+	unsigned short* PolyFlags = (unsigned short*)FMemory::Malloc(sizeof(unsigned short) * TileParams.polyCount);
+	//FMemory::Memset(PolyFlags, 0xff, sizeof(unsigned short) * MaxPolys);
+	if (bNoFlags)
+	{
+		FMemory::Memset(PolyFlags, 0xff, sizeof(unsigned short) * TileParams.polyCount);
+	}
+	else {
+		FMemory::Memset(PolyFlags, 0x0001, sizeof(unsigned short) * TileParams.polyCount);
+	}
+	TileParams.polyFlags = PolyFlags;
+
+	// Off mesh connections
+	TileParams.offMeshConCount = 0;
+	TileParams.offMeshCons = 0;
+
+	// Will be created by the init method based on the base poly
+	TileParams.detailMeshes = 0;
+	TileParams.detailVerts = 0;
+	TileParams.detailVertsCount = 0;
+	TileParams.detailTris = 0;
+	TileParams.detailTriCount = 0;
+
+	TileParams.verts = verts;
+	TileParams.polys = polys;
+	TileParams.polyAreas = PolyAreas;
+	TileParams.polyFlags = PolyFlags;
 }
 
-FVector AManualDetourNavMesh::GetMax() const
+bool AManualDetourNavMesh::BoundsIntersectsSegment(const FBox2D& Bounds, const FVector2D& A, const FVector2D& B)
 {
-	return Max;
+	FVector2D B1 = FVector2D(Bounds.Min.X, Bounds.Max.Y);
+	FVector2D B2 = FVector2D(Bounds.Max.X, Bounds.Min.Y);
+	FVector2D Tmp;
+
+	return (SegmentIntersectionTest(A, B, Bounds.Min, B1) ||
+		SegmentIntersectionTest(A, B, B1, Bounds.Max) ||
+		SegmentIntersectionTest(A, B, Bounds.Max, B2) ||
+		SegmentIntersectionTest(A, B, B2, Bounds.Min));
+}
+
+bool AManualDetourNavMesh::SegmentIntersectionTest(const FVector2D& SegmentStartA, const FVector2D& SegmentEndA, const FVector2D& SegmentStartB, const FVector2D& SegmentEndB)
+{
+	const FVector2D VectorA = SegmentEndA - SegmentStartA;
+	const FVector2D VectorB = SegmentEndB - SegmentStartB;
+
+	const float S = (-VectorA.Y * (SegmentStartA.X - SegmentStartB.X) + VectorA.X * (SegmentStartA.Y - SegmentStartB.Y)) / (-VectorB.X * VectorA.Y + VectorA.X * VectorB.Y);
+	const float T = (VectorB.X * (SegmentStartA.Y - SegmentStartB.Y) - VectorB.Y * (SegmentStartA.X - SegmentStartB.X)) / (-VectorB.X * VectorA.Y + VectorA.X * VectorB.Y);
+
+	return (S >= 0 && S <= 1 && T >= 0 && T <= 1);
 }

@@ -20,9 +20,30 @@ public:
 
 	float GetHeightAt(float X, float Y);
 	void MakeNoise();
+
+	UPROPERTY()
+	TArray<FVector2D> Coords;
+	UPROPERTY()
+	TArray<int32> Triangles;
+	UPROPERTY()
+	TArray<int32> HalfEdges;
+
+	FVector GetMin() const;
+	FVector GetMax() const;
+	bool IsGrid() const;
+
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	int32 RandomPointCount;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	bool bGrid;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	FVector Min;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	FVector Max;
 
 
 	UPROPERTY()

@@ -3,6 +3,7 @@
 
 #include "WorldMap.h"
 #include "ProceduralMeshComponent.h"
+#include "RegionDistribution.h"
 #include "ManualDetourNavMesh.h"
 #include "KismetProceduralMeshLibrary.h"
 //#include "FastNoise/FastNoise.h"
@@ -65,12 +66,6 @@ void AWorldMap::BuildMesh()
 
 	MakeNoise();
 
-	FVector Min = NavMesh->GetMin();
-	FVector Max = NavMesh->GetMax();
-
-	int32 Subdivisions = NavMesh->GetTileCount() * NavMesh->GetGridSubdivisions() + 1;
-
-	float Spacing = (Max.X - Min.X) / ((float)(Subdivisions - 1));
 	float MeshHeight = Max.Z - Min.Z;
 
 	if (Mesh->GetNumSections() > 0)
@@ -78,24 +73,56 @@ void AWorldMap::BuildMesh()
 		Mesh->ClearMeshSection(0);
 	}
 
-	TArray<int32> Triangles;
-	TArray<FVector> Vertices;
-	TArray<FVector> Normals;
-	TArray<FProcMeshTangent> Tangents;
-	TArray<FVector2D> UVs;
-	TArray<FColor> Colors;
-	UKismetProceduralMeshLibrary::CreateGridMeshWelded(Subdivisions, Subdivisions, Triangles, Vertices, UVs, Spacing);
+	TArray<int32> MeshTriangles;
+	TArray<FVector> MeshVertices;
+	TArray<FVector> MeshNormals;
+	TArray<FProcMeshTangent> MeshTangents;
+	TArray<FVector2D> MeshUVs;
+	TArray<FColor> MeshColors;
 
-	for (auto& Vert : Vertices)
+	if (bGrid)
+	{
+		int32 Subdivisions = NavMesh->GetTileCount() * NavMesh->GetGridSubdivisions() + 1;
+		float Spacing = (Max.X - Min.X) / ((float)(Subdivisions - 1));
+		UKismetProceduralMeshLibrary::CreateGridMeshWelded(Subdivisions, Subdivisions, MeshTriangles, MeshVertices, MeshUVs, Spacing);
+	}
+	else {
+		TArray<FVector2D> Points;
+		URegionDistribution::GenerateBoundedRandomPoints(RandomPointCount, FVector2D(Min), FVector2D(Max), Points);
+		URegionDistribution::GenerateTriangulation(Points, Coords, Triangles, HalfEdges);
+
+		MeshTriangles = Triangles;
+		MeshVertices.Reserve(Coords.Num());
+		MeshUVs.Reserve(Coords.Num());
+		for (int32 i = 0; i < Coords.Num(); i++)
+		{
+			MeshVertices.Add(FVector(Coords[i], 0.f));
+			MeshUVs.Add(Coords[i]);
+		}
+	}
+
+	for (auto& Vert : MeshVertices)
 	{
 		Vert.Z = Min.Z + MeshHeight*GetHeightAt(Vert.X, Vert.Y);
 	}
 
-	UKismetProceduralMeshLibrary::CalculateTangentsForMesh(Vertices, Triangles, UVs, Normals, Tangents);
-	Colors.AddZeroed(Vertices.Num());
-	Mesh->CreateMeshSection(0, Vertices, Triangles, Normals, UVs, Colors, Tangents, true);
+	UKismetProceduralMeshLibrary::CalculateTangentsForMesh(MeshVertices, MeshTriangles, MeshUVs, MeshNormals, MeshTangents);
+	MeshColors.AddZeroed(MeshVertices.Num());
+	Mesh->CreateMeshSection(0, MeshVertices, MeshTriangles, MeshNormals, MeshUVs, MeshColors, MeshTangents, true);
 	Mesh->SetMaterial(0, MeshMaterial);
 }
 
+FVector AWorldMap::GetMin() const
+{
+	return Min;
+}
 
+FVector AWorldMap::GetMax() const
+{
+	return Max;
+}
 
+bool AWorldMap::IsGrid() const
+{
+	return bGrid;
+}

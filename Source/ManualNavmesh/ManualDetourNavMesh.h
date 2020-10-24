@@ -40,6 +40,7 @@ class MANUALNAVMESH_API AManualDetourNavMesh : public ARecastNavMesh
 	GENERATED_BODY()
 
 public:
+	AManualDetourNavMesh();
 
 	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh")
 	static AManualDetourNavMesh* GetManualRecastNavMesh(UObject* Context);
@@ -61,14 +62,17 @@ public:
 	static void SetDetourVector(unsigned short* verts, const FVector V, unsigned short Index, dtNavMeshCreateParams& TileParams);
 	int32 GetTileCount() const;
 	int32 GetGridSubdivisions() const;
-	FVector GetMin() const;
-	FVector GetMax() const;
+	//FVector GetMin() const;
+	//FVector GetMax() const;
+	//bool GetGrid() const;
+
+	static void MoveToCentre(FVector &InVector, const FVector Centre, float Distance = 1.f);
 protected:
 	void MakeGridTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty);
+	void MakeTriangulationTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty, const TArray<FVector2D> &Coords, const TArray<int32> &Triangles, const TArray<int32> &HalfEdges);
 	void DebugDrawTileParams(dtNavMeshCreateParams& TileParams);
 	static FColor GetEdgeDebugColor(unsigned short EdgeCode);
 	static FVector GetPolyCentre(dtNavMeshCreateParams& TileParams, unsigned short Index);
-	static void MoveToCentre(FVector &InVector, const FVector Centre, float Distance = 1.f);
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	AWorldMap* SourceMap;
@@ -96,22 +100,32 @@ protected:
 	bool bNoPortals;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	bool bNoFlags;
+
+	/*
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	bool bGrid;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
-	bool bDebugDraw;
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	FVector Min;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
-	FVector Max;
+	FVector Max;*/
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
+	bool bDebugDraw;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
+	FIntPoint DebugTile;
+
 	//UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Detour")
 	//float CellSize;
 	//UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Detour")
 	//float CellHeight;
 
+	bool BoundsIntersectsSegment(const FBox2D& Bounds, const FVector2D& A, const FVector2D& B);
+	bool SegmentIntersectionTest(const FVector2D& SegmentStartA, const FVector2D& SegmentEndA, const FVector2D& SegmentStartB, const FVector2D& SegmentEndB);
+
 private:
 	float TileSize;
-
+	FVector Min;
+	FVector Max;
 
 };
 	
