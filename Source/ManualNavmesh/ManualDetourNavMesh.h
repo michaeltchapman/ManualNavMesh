@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Navmesh/RecastNavMesh.h"
 #include "Detour/DetourNavMeshBuilder.h"
+#include "RegionDistribution.h"
 #include "ManualDetourNavMesh.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogManualNavMesh, Log, All);
@@ -24,6 +25,7 @@ static const uint8 DNM_South = 0x10;
 // 00001 = west
 static const uint8 DNM_West = 0x08;
 */
+
 UENUM(BlueprintType)
 enum class EPCGDirection : uint8
 {
@@ -32,6 +34,61 @@ enum class EPCGDirection : uint8
 	E_East  UMETA(DisplayName = "East"),
 	E_West  UMETA(DisplayName = "West"),
 	E_None  UMETA(DisplayName = "None"),
+};
+
+UENUM(BlueprintType)
+enum class EPCGTriPoint : uint8
+{
+	E_Internal  UMETA(DisplayName = "Internal"),
+	E_External  UMETA(DisplayName = "External"),
+	E_NorthWest UMETA(DisplayName = "NorthWest"),
+	E_North		UMETA(DisplayName = "North"),
+	E_NorthEast UMETA(DisplayName = "NorthEast"),
+	E_East		UMETA(DisplayName = "East"),
+	E_SouthEast UMETA(DisplayName = "SouthEast"),
+	E_South		UMETA(DisplayName = "South"),
+	E_SouthWest UMETA(DisplayName = "SouthWest"),
+	E_West		UMETA(DisplayName = "West")
+};
+
+
+USTRUCT(BlueprintType)
+struct MANUALNAVMESH_API FPCGTriCorners
+{
+	GENERATED_BODY()
+public:
+	bool NE;
+	bool SE;
+	bool SW;
+	bool NW;
+
+	bool IsContained()
+	{
+		return NE && SE && SW && NW;
+	}
+};
+
+USTRUCT(BlueprintType)
+struct MANUALNAVMESH_API FPCGTriPoint
+{
+	GENERATED_BODY()
+public:
+	int32 Key;
+	EPCGTriPoint Value;
+
+	FPCGTriPoint()
+		: Key(-1)
+		, Value(EPCGTriPoint::E_External)
+	{
+	}
+
+	FPCGTriPoint(int32 inKey, EPCGTriPoint inValue)
+		: Key(inKey)
+		, Value(inValue)
+	{
+	}
+
+	FString ToString() const;
 };
 
 UCLASS(notplaceable, Blueprintable)
@@ -69,10 +126,41 @@ public:
 	static void MoveToCentre(FVector &InVector, const FVector Centre, float Distance = 1.f);
 protected:
 	void MakeGridTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty);
-	void MakeTriangulationTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty, const TArray<FVector2D> &Coords, const TArray<int32> &Triangles, const TArray<int32> &HalfEdges);
+	void MakeTriangulationTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty, const FPCGDelaunayTriangulation& Triangulation);
 	void DebugDrawTileParams(dtNavMeshCreateParams& TileParams);
 	static FColor GetEdgeDebugColor(unsigned short EdgeCode);
 	static FVector GetPolyCentre(dtNavMeshCreateParams& TileParams, unsigned short Index);
+
+
+	FString CornerString(FPCGTriCorners& Corners);
+
+	// Create the triangle TriIndex
+	int32 ProcessTriangle(const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation,
+		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+
+	// Add relevant point to TmpVerts and mapping to InternalVerts, ignore points outside bounds
+	FPCGTriPoint ProcessPoint(int32 PointIndex, const FBox2D& Bounds, const TArray<FVector2D>& Coords, TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& InternalVerts);
+
+	typedef TTuple<FPCGTriPoint*, bool> TriPointType;
+	typedef TArray<TriPointType, TInlineAllocator<6>> TriPointArray;
+	//typedef TArray<TTuple<FPCGTriPoint*, bool>, TInlineAllocator<6>> TriPointArray;
+
+	bool PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation);
+
+	bool PlaceCorners(TriPointType& CurrentPoint, TriPointType& PreviousPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation);
+
+	void ProcessEdge(FPCGTriPoint &Edge1, FPCGTriPoint &Edge2, int32 EdgeIndex, const FPCGTriPoint &A, const FPCGTriPoint &B, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
+		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+
+	void ColinearEdgeCheck(FPCGTriPoint &Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D &VA, FVector2D &VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
+		TArray<FVector2D> &TmpVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+
+	void IntersectingEdgeCheck(FPCGTriPoint &Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D &VA, FVector2D &VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
+		TArray<FVector2D> &TmpVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+
+	bool TriangleRelevanceCheck(const FVector2D& A, const FVector2D& B, const FVector2D& C, const FBox2D& Bounds);
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	AWorldMap* SourceMap;
@@ -114,18 +202,29 @@ protected:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	FIntPoint DebugTile;
 
+	// Controls the amount of temp space to reserve for points
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
+	int32 TempReserveVerts;
+	// Controls the amount of temp space to reserve for polys 
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
+	int32 TempReservePolys;
+
 	//UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Detour")
 	//float CellSize;
 	//UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Detour")
 	//float CellHeight;
 
-	bool BoundsIntersectsSegment(const FBox2D& Bounds, const FVector2D& A, const FVector2D& B);
-	bool SegmentIntersectionTest(const FVector2D& SegmentStartA, const FVector2D& SegmentEndA, const FVector2D& SegmentStartB, const FVector2D& SegmentEndB);
 
 private:
 	float TileSize;
 	FVector Min;
 	FVector Max;
 
+	void AddHalfEdgeTempVert(FVector2D Location, FPCGTriPoint& Point, int32 EdgeIndex, EPCGTriPoint Type, TArray<FVector2D> &Verts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+	bool IsInternalSegment(const FPCGTriPoint& A, const FPCGTriPoint& B);
+
+	void LogTriPoly(int32 Index, FPCGTriPoint &EdgeAB, FPCGTriPoint &EdgeBA,FPCGTriPoint &EdgeBC,FPCGTriPoint &EdgeCB,FPCGTriPoint &EdgeCA,FPCGTriPoint &EdgeAC, FPCGTriPoint &A, FPCGTriPoint &B, FPCGTriPoint &C, FPCGTriCorners& Corners);
+	int32 PointCount(FPCGTriPoint& EdgeAB, FPCGTriPoint& EdgeBA, FPCGTriPoint& EdgeBC, FPCGTriPoint& EdgeCB, FPCGTriPoint& EdgeCA, FPCGTriPoint& EdgeAC, FPCGTriPoint& A, FPCGTriPoint& B, FPCGTriPoint& C, FPCGTriCorners& Corners);
+	int32 PointAccum(FPCGTriPoint& EdgeAB, FPCGTriCorners& Corners);
 };
 	

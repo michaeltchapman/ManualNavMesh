@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "FastNoise/FastNoise.h"
+#include "RegionDistribution.h"
 #include "WorldMap.generated.h"
 
 class UProceduralMeshComponent;
@@ -22,11 +23,13 @@ public:
 	void MakeNoise();
 
 	UPROPERTY()
+	FPCGDelaunayTriangulation Triangulation;
+	/*UPROPERTY()
 	TArray<FVector2D> Coords;
 	UPROPERTY()
 	TArray<int32> Triangles;
 	UPROPERTY()
-	TArray<int32> HalfEdges;
+	TArray<int32> HalfEdges;*/
 
 	FVector GetMin() const;
 	FVector GetMax() const;

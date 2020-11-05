@@ -89,15 +89,17 @@ void AWorldMap::BuildMesh()
 	else {
 		TArray<FVector2D> Points;
 		URegionDistribution::GenerateBoundedRandomPoints(RandomPointCount, FVector2D(Min), FVector2D(Max), Points);
-		URegionDistribution::GenerateTriangulation(Points, Coords, Triangles, HalfEdges);
+		//URegionDistribution::GenerateTriangulation(Points, Coords, Triangles, HalfEdges);
 
-		MeshTriangles = Triangles;
-		MeshVertices.Reserve(Coords.Num());
-		MeshUVs.Reserve(Coords.Num());
-		for (int32 i = 0; i < Coords.Num(); i++)
+		URegionDistribution::GenerateTriangulation(Points, Triangulation);
+
+		MeshTriangles = Triangulation.Triangles;
+		MeshVertices.Reserve(Triangulation.Coords.Num());
+		MeshUVs.Reserve(Triangulation.Coords.Num());
+		for (int32 i = 0; i < Triangulation.Coords.Num(); i++)
 		{
-			MeshVertices.Add(FVector(Coords[i], 0.f));
-			MeshUVs.Add(Coords[i]);
+			MeshVertices.Add(FVector(Triangulation.Coords[i], 0.f));
+			MeshUVs.Add(Triangulation.Coords[i]);
 		}
 	}
 

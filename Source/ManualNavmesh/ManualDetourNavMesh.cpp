@@ -137,16 +137,15 @@ bool AManualDetourNavMesh::BuildManualNavMesh()
 
 	dtStatus status = PIRNM->DetourNavMesh->init(&NMParams);
 
-	for (int y = 0; y < TileCount; ++y)
+	for (int y = 0; y < TileCount; y++)
 	{
-		for (int x = 0; x < TileCount; ++x)
+		for (int x = 0; x < TileCount; x++)
 		{
-#if WITH_EDITOR
-			if (bDebugDraw && DebugTile.X >= 0 && DebugTile.Y >= 0 && x != DebugTile.X && y != DebugTile.Y)
+			if (bDebugDraw && DebugTile.X >= 0 && DebugTile.Y >= 0 && (x != DebugTile.X || y != DebugTile.Y))
 			{
+				UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("skipping tile %d,%d"), x, y);
 				continue;
 			}
-#endif WITH_EDITOR
 
 			float TileBmin[3] = {
 				bmin[0] + x * TileSize,
@@ -302,7 +301,8 @@ unsigned char* AManualDetourNavMesh::BuildTileMesh(dtNavMesh* TiledNavMesh, cons
 		MakeGridTile(TileParams, tx, ty);
 	}
 	else {
-		MakeTriangulationTile(TileParams, tx, ty, SourceMap->Coords, SourceMap->Triangles, SourceMap->HalfEdges);
+		//MakeTriangulationTile(TileParams, tx, ty, SourceMap->Coords, SourceMap->Triangles, SourceMap->HalfEdges);
+		MakeTriangulationTile(TileParams, tx, ty, SourceMap->Triangulation);
 	}
 
 	if (TileParams.vertCount < 3)
@@ -623,7 +623,7 @@ int32 AManualDetourNavMesh::GetGridSubdivisions() const
 	return GridSubdivisions;
 }
 
-void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty, const TArray<FVector2D>& Coords, const TArray<int32>& Triangles, const TArray<int32>& HalfEdges)
+void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TileParams, const int32 tx, const int32 ty, const FPCGDelaunayTriangulation &Triangulation)
 {
 	FBox2D Bounds = FBox2D(
 		FVector2D(-1.f * TileParams.bmax[0], -1.f * TileParams.bmax[2]),
@@ -634,36 +634,56 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 
 	TSet<int32> TileTriangles;
 
-	for (int32 i = 0; i < Triangles.Num() / 3; i++)
+#if WITH_EDITOR
+	if (bDebugDraw)
 	{
-		const FVector2D &A = Coords[Triangles[3 * i]];
-		const FVector2D &B = Coords[Triangles[3 * i+1]];
-		const FVector2D &C = Coords[Triangles[3 * i+2]];
+		DrawDebugBox(GetWorld(), FVector(Bounds.GetCenter(), 0.f), FVector(Bounds.GetExtent(), 1.f), FColor::Cyan, true, 999.f, 0, DebugThickness);
+	}
+#endif
 
-		// If there's a point in the bounds we know this triangle is relevant
-		if (Bounds.IsInside(A) || Bounds.IsInside(B) || Bounds.IsInside(C))
+	TArray<FVector2D> TmpVerts;
+	TmpVerts.Reserve(TempReserveVerts);
+	TArray<unsigned short> TmpPolys;
+	TmpPolys.Reserve(2 * TempReservePolys * 6);
+	FMemory::Memset(TmpPolys.GetData(), 0xff, sizeof(unsigned short) * TempReservePolys * 6 * 2);
+
+
+	// Mapping from triangulation vert index to vert in this tile
+	TMap<int32, FPCGTriPoint> InternalVerts;
+	InternalVerts.Reserve(TempReserveVerts);
+
+	// Mapping from triangulation half edge index to a derived vert in this tile
+	TMap<int32, FPCGTriPoint> HalfEdgeVerts;
+	HalfEdgeVerts.Reserve(TempReserveVerts);
+
+	// First go through all the triangles in the mesh and find the points/tris/edges we're interested in for this tile
+	int32 MaxPolyVerts = 3;
+
+	int32 TmpCurrentPoly = 0;
+	for (int32 i = 0; i < Triangulation.Triangles.Num() / 3; i++)
+	{
+		int32 VertCount = ProcessTriangle(Bounds, i, Triangulation, TmpVerts, TmpPolys, TmpCurrentPoly, InternalVerts, HalfEdgeVerts);
+		if (VertCount > 0)
 		{
 			TileTriangles.Add(i);
-			continue;
+			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Triangle %d has %d verts"), i, VertCount);
 		}
-
-		// There could be 1 or more edges intersecting the box without any points
-		// being in the box
-		if (BoundsIntersectsSegment(Bounds, A, B) ||
-			BoundsIntersectsSegment(Bounds, B, C) ||
-			BoundsIntersectsSegment(Bounds, A, C))
-		{
-			TileTriangles.Add(i);
-		}
+		MaxPolyVerts = FMath::Max(MaxPolyVerts, VertCount);
 	}
+//	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("MaxPolyVerts for tile %d, Corner Verts %d, EdgeVerts, %d, InternalVerts %d"), MaxPolyVerts, CornerVerts, EdgeVerts, InternalVerts.Num());
 
-	for (auto Tri : TileTriangles)
+#if WITH_EDITOR
+	if (bDebugDraw)
 	{
-		URegionDistribution::DrawTriangle(this, Tri, Coords, Triangles, HalfEdges, DebugThickness);
+		for (auto Tri : TileTriangles)
+		{
+			URegionDistribution::DrawTriangle(this, Tri, Triangulation, DebugThickness, Tri);
+		}
 	}
+#endif WITH_EDITOR
 
 	// Vertices per polygon
-	TileParams.nvp = 4;
+	TileParams.nvp = MaxPolyVerts;
 
 	// Vertices per polygon
 	TileParams.vertCount = 4;
@@ -686,6 +706,17 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 	polys[1] = 1;
 	polys[2] = 2;
 	polys[3] = 3;
+
+
+	// Then go through the points for each triangle and snap them to the cell grid.
+	// Have the lower triangle index "own" the vertex, so a neighbour with higher index can get the vert from there
+	// There's the chance we need to clean up the input points for cases where points are too close to each other and need to be merged
+	// It's a bit easier to determine if edges lie exactly along the boundary when they're expressed as ints/shorts so do that instead of working with floats
+	// - except determining the intersection point between the edge and the tile bounds which might be better to do with floats (?)
+	for (auto Tri : TileTriangles)
+	{
+		AddTriToPoly(Tri, TileParams, Triangulation, verts, polys);
+	}
 
 	// This is area IDs, not the area of the polygon.
 	unsigned char* PolyAreas = (unsigned char*)FMemory::Malloc(sizeof(unsigned char) * TileParams.polyCount);
@@ -722,25 +753,692 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 	TileParams.polyFlags = PolyFlags;
 }
 
-bool AManualDetourNavMesh::BoundsIntersectsSegment(const FBox2D& Bounds, const FVector2D& A, const FVector2D& B)
+int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation,
+		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts)
 {
+	int32 Ai = Triangulation.Triangles[3 * TriIndex];
+	int32 Bi = Triangulation.Triangles[3 * TriIndex+1];
+	int32 Ci = Triangulation.Triangles[3 * TriIndex+2];
+
+	const FVector2D& A = Triangulation.Coords[Ai];
+	const FVector2D& B = Triangulation.Coords[Bi];
+	const FVector2D& C = Triangulation.Coords[Ci];
+
+	// Do a quick check to see if all points are on a single side of the bounds
+	if (!TriangleRelevanceCheck(A, B, C, Bounds))
+	{
+		return 0;
+	}
+
+	// Get the status of all the points in this triangle
+	FPCGTriPoint Av = ProcessPoint(Ai, Bounds, Triangulation.Coords, TmpVerts, InternalVerts);
+	FPCGTriPoint Bv = ProcessPoint(Bi, Bounds, Triangulation.Coords, TmpVerts, InternalVerts);
+	FPCGTriPoint Cv = ProcessPoint(Ci, Bounds, Triangulation.Coords, TmpVerts, InternalVerts);
+
+	// If all points are within the bounds, we can create the poly and get outta here
+	if (Av.Key >= 0 && Bv.Key >= 0 && Cv.Key >= 0)
+	{
+		// TODO make poly
+		return 3;
+	}
+
+
+	// If all the corners are within this triangle we can make a quad and be done. This
+	// also prevents having to handle this case when walking along edges, which would be
+	// quite awkward without any obvious starting point
+	FPCGTriCorners Corners;
+
 	FVector2D B1 = FVector2D(Bounds.Min.X, Bounds.Max.Y);
 	FVector2D B2 = FVector2D(Bounds.Max.X, Bounds.Min.Y);
-	FVector2D Tmp;
+	Corners.SW = URegionDistribution::IsInTriangle(Bounds.Min, A, B, C);
+	Corners.NE = URegionDistribution::IsInTriangle(Bounds.Max, A, B, C);
+	Corners.NW = URegionDistribution::IsInTriangle(B1, A, B, C);
+	Corners.SE = URegionDistribution::IsInTriangle(B2, A, B, C);
+	if (Corners.IsContained())
+	{
+		// Triangle contains the entire tile
+		// TODO make poly
+		return 4;
+	}
 
-	return (SegmentIntersectionTest(A, B, Bounds.Min, B1) ||
-		SegmentIntersectionTest(A, B, B1, Bounds.Max) ||
-		SegmentIntersectionTest(A, B, Bounds.Max, B2) ||
-		SegmentIntersectionTest(A, B, B2, Bounds.Min));
+	// Start testing the edges to see if there's intersections with the bounds and/or colinear segments with the bounds
+	FPCGTriPoint EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC;
+
+	ProcessEdge(EdgeAB, EdgeBA, 3*TriIndex, Av, Bv, Bounds, Triangulation, TmpVerts, TmpPolys, CurrentPoly, InternalVerts, HalfEdgeVerts);
+	ProcessEdge(EdgeBC, EdgeCB, 3*TriIndex+1, Bv, Cv, Bounds, Triangulation, TmpVerts, TmpPolys, CurrentPoly, InternalVerts, HalfEdgeVerts);
+	ProcessEdge(EdgeCA, EdgeAC, 3*TriIndex+2, Cv, Av, Bounds, Triangulation, TmpVerts, TmpPolys, CurrentPoly, InternalVerts, HalfEdgeVerts);
+
+	LogTriPoly(TriIndex, EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, Av, Bv, Cv, NE, SE, SW, NW);
+	int32 Count = PointCount(EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, Av, Bv, Cv, NE, SE, SW, NW);
+
+	// If there's less than 3 valid points then we might have found two edge vertices with the third pointing externally
+	// which is a valid triangle but not for this tile
+	if (Count < 3)
+	{
+		return Count;
+	}
+
+	// Edge intersections + Points within the bounds + Corners within the triangle
+	//
+	// There can be cases where points are too close to each other and need to be merged
+	// which will need to be handled later, but that can only reduce the max point count
+
+	// add the half edge int32, use the direction of the edge to determine which half edge
+	// should own the point. ie. if the edge hits two points, only add the first since the pair
+	// will add the other point if it exists. Use a distance sq check
+
+	// To create the poly walk around the points and both edges:
+
+	// - Point A
+	// - HalfEdge A - > B
+	// - HalfEdge B - > A
+	// - Point B
+	// - HalfEdge B - > C
+	// - HalfEdge C - > B
+	// - Point C
+	// - HalfEdge C - > A
+	// - HalfEdge A - > C
+	//
+	// Any time we cross an edge we need to track which edge it was. If we return via a different edge we need to
+	// check which corners are available in order to get from the egress to the ingress point cleanly
+
+	TriPointArray PointsToPlace;
+	if (Av.Key >= 0)
+		PointsToPlace.Add(TriPointType(&Av, true));
+	if (EdgeAB.Key >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeAB, false));
+	if (EdgeBA.Key >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeBA, false));
+	
+	if (Bv.Key >= 0)
+		PointsToPlace.Add(TriPointType(&Bv, true));
+	if (EdgeBC.Key >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeBC, false));
+	if (EdgeCB.Key >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeCB, false));
+
+	if (Cv.Key >= 0)
+		PointsToPlace.Add(TriPointType(&Cv, true));
+	if (EdgeCA.Key >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeCA, false));
+	if (EdgeAC.Key >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeAC, false));
+
+	PlacePoints(CurrentPoly, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation);
+	CurrentPoly++;
+	return Count;
 }
 
-bool AManualDetourNavMesh::SegmentIntersectionTest(const FVector2D& SegmentStartA, const FVector2D& SegmentEndA, const FVector2D& SegmentStartB, const FVector2D& SegmentEndB)
+
+
+bool AManualDetourNavMesh::PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray &PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+	TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners &Corners, const FPCGDelaunayTriangulation& Triangulation)
 {
-	const FVector2D VectorA = SegmentEndA - SegmentStartA;
-	const FVector2D VectorB = SegmentEndB - SegmentStartB;
+	for (int32 i = 0; i < PointsToPlace.Num(); i++)
+	{
+		TriPointType& PreviousPoint = i == 0 ? PointsToPlace.Last() : PointsToPlace[i - 1];
+		TriPointType& CurrentPoint = PointsToPlace[i];
 
-	const float S = (-VectorA.Y * (SegmentStartA.X - SegmentStartB.X) + VectorA.X * (SegmentStartA.Y - SegmentStartB.Y)) / (-VectorB.X * VectorA.Y + VectorA.X * VectorB.Y);
-	const float T = (VectorB.X * (SegmentStartA.Y - SegmentStartB.Y) - VectorB.Y * (SegmentStartA.X - SegmentStartB.X)) / (-VectorB.X * VectorA.Y + VectorA.X * VectorB.Y);
+		// if current point is a half edge and previous point is a half edge, and the edge doesn't match, pull in corners
+		if (!PreviousPoint.Value && !CurrentPoint.Value && CurrentPoint.Key->Value != PreviousPoint.Key->Value)
+		{
+			// add needed corner(s)
+			PlaceCorners(CurrentPoint, PreviousPoint, PolyIndex, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation);
+		}
 
-	return (S >= 0 && S <= 1 && T >= 0 && T <= 1);
+		// need the poly index so we can place in the right spot
+		// Add vertex to tmppolys
+
+		// need the triangulation so we can connect to adjacent polys.
+		// Use the triangulation's numbering since we won't know the corrected numbering until everything has been placed
+			// TODO actually we could do reciprocal updates as we go?
+		// Add adjacency to tmppolys
+
+	}
+}
+
+bool AManualDetourNavMesh::PlaceCorners(TriPointType& CurrentPoint, TriPointType& PreviousPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+	TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation)
+{
+	return true;
+}
+
+FPCGTriPoint AManualDetourNavMesh::ProcessPoint(int32 PointIndex, const FBox2D& Bounds, const TArray<FVector2D>& Coords, TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& InternalVerts)
+{
+	// Point is already handled for this tile
+	FPCGTriPoint* V = InternalVerts.Find(PointIndex);
+	if (V)
+	{
+		return *V;
+	}
+
+	/*
+		For any point, it's inside the bounds, on the edge, is a corner or is external. In the first 3 cases add the point to TmpVerts and add a mapping from
+		PointIndex to the new Index in TmpVerts.
+	*/
+	const FVector2D& TestPoint = Coords[PointIndex];
+	if ((TestPoint.X >= Bounds.Min.X) && (TestPoint.X <= Bounds.Max.X) && (TestPoint.Y >= Bounds.Min.Y) && (TestPoint.Y <= Bounds.Max.Y))
+	{
+		int32 PV = TmpVerts.Num();
+		TmpVerts.Add(TestPoint);
+		FPCGTriPoint TP = FPCGTriPoint(PV, EPCGTriPoint::E_External);
+
+		// Internal point
+		if ((TestPoint.X > Bounds.Min.X) && (TestPoint.X < Bounds.Max.X) && (TestPoint.Y > Bounds.Min.Y) && (TestPoint.Y < Bounds.Max.Y))
+		{
+			TP = FPCGTriPoint(PV, EPCGTriPoint::E_Internal);
+		}
+
+		// Edge and corner points
+		else if (TestPoint.X == Bounds.Min.X)
+		{
+			if (TestPoint.Y == Bounds.Min.Y)
+			{
+				TP = FPCGTriPoint(PV, EPCGTriPoint::E_SouthWest);
+			}
+			else if (TestPoint.Y == Bounds.Max.Y)
+			{
+				TP = FPCGTriPoint(PV, EPCGTriPoint::E_NorthWest);
+			}
+			else {
+				TP = FPCGTriPoint(PV, EPCGTriPoint::E_West);
+			}
+		}
+
+		else if (TestPoint.X == Bounds.Max.X)
+		{
+			if (TestPoint.Y == Bounds.Min.Y)
+			{
+				TP = FPCGTriPoint(PV, EPCGTriPoint::E_SouthEast);
+			}
+			else if (TestPoint.Y == Bounds.Max.Y)
+			{
+				TP = FPCGTriPoint(PV, EPCGTriPoint::E_NorthEast);
+			}
+			else {
+				TP = FPCGTriPoint(PV, EPCGTriPoint::E_East);
+			}
+		}
+
+		else if (TestPoint.Y == Bounds.Min.Y)
+		{
+			TP = FPCGTriPoint(PV, EPCGTriPoint::E_South);
+		}
+
+		else if (TestPoint.Y == Bounds.Max.Y)
+		{
+			TP = FPCGTriPoint(PV, EPCGTriPoint::E_North);
+		}
+
+		if (TP.Value == EPCGTriPoint::E_External)
+		{
+			UE_LOG(LogManualNavMesh, Warning, TEXT("point %d (%s) lies within the border but wasn't assigned an internal code"), PointIndex, *TestPoint.ToString());
+		}
+
+		InternalVerts.Add(PointIndex, TP);
+		return TP;
+	}
+
+	// Point is not within the bounds of this tile
+	return FPCGTriPoint(-1, EPCGTriPoint::E_External);
+}
+
+void AManualDetourNavMesh::ProcessEdge(FPCGTriPoint& Edge1, FPCGTriPoint& Edge2, int32 EdgeIndex, const FPCGTriPoint& A, const FPCGTriPoint& B, const FBox2D& Bounds, const FPCGDelaunayTriangulation& Triangulation,
+	TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, int32& CurrentPoly, TMap<int32, FPCGTriPoint>& InternalVerts, TMap<int32, FPCGTriPoint>& HalfEdgeVerts)
+{
+
+	/*
+		There's quite a few cases for edges.
+		 - Is colinear with a boundary segment
+		   - With one point outside bounds ( outside -> inside edge has the corner )
+		   - With both points outside bounds ( both edges have corners )
+		   - With both points inside bounds ( both edges are ignored since the points will already be included )
+		 - Intersects two boundary segments ( both edges will have an edge point )
+		 - Intersects one boundary segment ( outside -> inside edge has the edge point )
+
+		 In some cases the paired edge will not exist in HalfEdges but does need to map to a point. This will happen
+		 when the edge forms the boundary of the triangulation, and can commonly happen with the case where both edges need to
+		 be corners.
+		 This shouldn't be a problem because the edge of the triangulation will have no adjacent polys, so we don't need to be
+		 able to track these verts from another poly.
+	*/
+
+	/*
+		A Key of -1 indicates nothing is here since it's meant to be the value of this point in TmpVerts.
+	*/
+	Edge1.Key = -1;
+	Edge2.Key = -1;
+	Edge1.Value = EPCGTriPoint::E_External;
+	Edge2.Value = EPCGTriPoint::E_External;
+
+	// The very first thing to test is colinear case 3, since we want to ignore all checks on those types of segments and just use the
+	// points as-is without adjustment, and they'll cause problems with both colinear tests and intersection tests.
+	if (IsInternalSegment(A, B))
+	{
+		return;
+	}
+
+	// Next we can check if this edge has already been walked by a neighbour triangle - we can use their results instead of recalculating
+	FPCGTriPoint* E1 = HalfEdgeVerts.Find(EdgeIndex);
+	if (E1)
+	{
+		Edge1.Key = E1->Key;
+		Edge1.Value = E1->Value;
+	}
+	int32 Edge2Index = Triangulation.HalfEdges[EdgeIndex] >= 0 ? Triangulation.HalfEdges[EdgeIndex] : -1;
+	if (Edge2Index < 0)
+	{
+		FPCGTriPoint* E2 = HalfEdgeVerts.Find(Edge2Index);
+		if (E2)
+		{
+			Edge2.Key = E2->Key;
+			Edge2.Value = E2->Value;
+		}
+	}
+
+	// Edge was already processed by our neighbour
+	// TODO add an unprocessed option to the ENUM so we can track edges that didn't match
+	// as well and prevent double-testing everything that isn't relevant
+	if (Edge1.Key >= 0 || Edge2.Key >= 0)
+	{
+		return;
+	}
+
+	// We probably want to test colinear cases next because the intersection tests will give positive results but they
+	// will be wrong if the segment is colinear
+	int32 VertAi = Triangulation.Triangles[EdgeIndex];
+	int32 VertBi = Triangulation.Triangles[Triangulation.NextHalfedge(EdgeIndex)];
+
+	FVector2D VertA = Triangulation.Coords[VertAi];
+	FVector2D VertB = Triangulation.Coords[VertBi];
+
+	ColinearEdgeCheck(Edge1, EdgeIndex, A, B, VertA, VertB, Bounds, Triangulation, TmpVerts, HalfEdgeVerts);
+	ColinearEdgeCheck(Edge2, Edge2Index, B, A, VertB, VertA, Bounds, Triangulation, TmpVerts, HalfEdgeVerts);
+
+	// Edge was colinear, we are done 
+	if (Edge1.Key >= 0 || Edge2.Key >= 0)
+	{
+		return;
+	}
+
+	// Intersection test. Only return positive result when A is external and B is internal, or return the
+	// closer result to A if both are external.
+	IntersectingEdgeCheck(Edge1, EdgeIndex, A, B, VertA, VertB, Bounds, Triangulation, TmpVerts, HalfEdgeVerts);
+	IntersectingEdgeCheck(Edge2, Edge2Index, B, A, VertB, VertA, Bounds, Triangulation, TmpVerts, HalfEdgeVerts);
+
+}
+
+void AManualDetourNavMesh::ColinearEdgeCheck(FPCGTriPoint& Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D& VA, FVector2D &VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation& Triangulation,
+	TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& HalfEdgeVerts)
+{
+
+	if (VA.X == VB.X)
+	{
+		// AB Colinear with East Boundary
+		if (VA.X == Bounds.Max.X)
+		{
+			if (VA.Y < Bounds.Min.Y && VB.Y > Bounds.Min.Y)
+			{
+				// A is South of the East boundary and B is either on or North of it
+				AddHalfEdgeTempVert(FVector2D(Bounds.Max.X, Bounds.Min.Y), Edge,EdgeIndex, EPCGTriPoint::E_SouthEast, TmpVerts, HalfEdgeVerts);
+			}
+			else if (VA.Y > Bounds.Max.Y && VB.Y < Bounds.Max.Y)
+			{
+				// A is North of the East boundary and B is either on or South of it
+				AddHalfEdgeTempVert(FVector2D(Bounds.Max.X, Bounds.Min.Y), Edge,EdgeIndex, EPCGTriPoint::E_NorthEast, TmpVerts, HalfEdgeVerts);
+			}
+		}
+		// AB Colinear with West Boundary
+		else if (VA.X == Bounds.Min.X)
+		{
+			if (VA.Y < Bounds.Min.Y && VB.Y > Bounds.Min.Y)
+			{
+				// A is South of the West boundary and B is either on or North of it
+				AddHalfEdgeTempVert(Bounds.Min, Edge,EdgeIndex, EPCGTriPoint::E_SouthWest, TmpVerts, HalfEdgeVerts);
+			}
+			else if (VA.Y > Bounds.Max.Y && VB.Y < Bounds.Max.Y)
+			{
+				// A is North of the West boundary and B is either on or South of it
+				AddHalfEdgeTempVert(FVector2D(Bounds.Min.X, Bounds.Max.Y), Edge,EdgeIndex, EPCGTriPoint::E_NorthWest, TmpVerts, HalfEdgeVerts);
+			}
+		}
+	}
+
+	if (VA.Y == VB.Y)
+	{
+		// AB Colinear with North Boundary
+		if (VA.Y == Bounds.Max.Y)
+		{
+			if (VA.X < Bounds.Min.X && VB.X > Bounds.Min.X)
+			{
+				// A is West of the North boundary and B is either on or East of it
+				AddHalfEdgeTempVert(FVector2D(Bounds.Min.X, Bounds.Max.Y), Edge,EdgeIndex, EPCGTriPoint::E_NorthWest, TmpVerts, HalfEdgeVerts);
+			}
+			else if (VA.X > Bounds.Max.X && VB.X < Bounds.Max.X)
+			{
+				// A is East of the North boundary and B is either on or West of it
+				AddHalfEdgeTempVert(FVector2D(Bounds.Max.X, Bounds.Min.Y), Edge,EdgeIndex, EPCGTriPoint::E_NorthEast, TmpVerts, HalfEdgeVerts);
+			}
+		}
+		// AB Colinear with South Boundary
+		else if (VA.Y == Bounds.Min.Y)
+		{
+			if (VA.X < Bounds.Min.X && VB.X > Bounds.Min.X)
+			{
+				// A is West of the South boundary and B is either on or East of it
+				AddHalfEdgeTempVert(Bounds.Min, Edge,EdgeIndex, EPCGTriPoint::E_SouthWest, TmpVerts, HalfEdgeVerts);
+			}
+			else if (VA.X > Bounds.Max.X && VB.X < Bounds.Max.X)
+			{
+				// A is East of the South boundary and B is either on or West of it
+				AddHalfEdgeTempVert(FVector2D(Bounds.Max.X, Bounds.Min.Y), Edge,EdgeIndex, EPCGTriPoint::E_SouthEast, TmpVerts, HalfEdgeVerts);
+			}
+		}
+	}
+
+}
+void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeIndex, const FPCGTriPoint& PA, const FPCGTriPoint& PB, FVector2D& VA, FVector2D& VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation& Triangulation,
+	TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& HalfEdgeVerts)
+{
+	// TODO the intersection test should also give us the height for the intersect point
+
+	// Intersection test. Only return positive result when A is external and B is internal, or return the
+	// closer result to A if both are external.
+	if (PA.Value != EPCGTriPoint::E_External)
+	{
+		return;
+	}
+
+	FVector B1 = FVector(Bounds.Min.X, Bounds.Max.Y, 0.f);
+	FVector B2 = FVector(Bounds.Max.X, Bounds.Min.Y, 0.f);
+
+	// Note that we don't want cases where B is on the edge, only actual internal points give intersections 
+	if (PA.Value == EPCGTriPoint::E_External && PB.Value == EPCGTriPoint::E_Internal)
+	{
+
+		// TODO this might need to be corrected to the corner in the unlikely event the segment intersects with the corner
+		DrawDebugLine(GetWorld(), FVector(VA, 0.f), FVector(VB, 0.f), FColor::Purple, true, 999.f, 0, 2.f);
+
+		DrawDebugLine(GetWorld(), FVector(Bounds.Min, 0.f), B1, FColor::Red, true, 999.f, 0, 2.f);
+		DrawDebugLine(GetWorld(), FVector(Bounds.Max, 0.f), B1, FColor::Orange, true, 999.f, 0, 2.f);
+		DrawDebugLine(GetWorld(), FVector(Bounds.Max, 0.f), B2, FColor::Yellow, true, 999.f, 0, 2.f);
+		DrawDebugLine(GetWorld(), FVector(Bounds.Min, 0.f), B2, FColor::Green, true, 999.f, 0, 2.f);
+
+		FVector IntersectPoint;
+		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B1, IntersectPoint))
+		{
+			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_West, TmpVerts, HalfEdgeVerts);
+			return;
+		}
+		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B1, IntersectPoint))
+		{
+			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_North, TmpVerts, HalfEdgeVerts);
+			return;
+		}
+		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B2, IntersectPoint))
+		{
+			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_East, TmpVerts, HalfEdgeVerts);
+			return;
+		}
+		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B2, IntersectPoint))
+		{
+			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_South, TmpVerts, HalfEdgeVerts);
+			return;
+		}
+
+	}
+
+	// Will either be 2 intersections and pick the closest, or none at all.
+	if (PA.Value == EPCGTriPoint::E_External && PB.Value == EPCGTriPoint::E_External)
+	{
+		FVector IntersectPoint1;
+		FVector IntersectPoint2;
+		EPCGTriPoint IP1Type = EPCGTriPoint::E_External;
+		EPCGTriPoint IP2Type = EPCGTriPoint::E_External;
+
+		FVector& CurrentPoint = IntersectPoint1;
+
+		bool bFoundP1 = false;
+		bool bFoundP2 = false;
+
+		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B1, CurrentPoint))
+		{
+			bFoundP1 = true;
+			CurrentPoint = IntersectPoint2;
+			IP1Type = EPCGTriPoint::E_West;
+		}
+
+		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B1, CurrentPoint))
+		{
+
+			if (bFoundP1)
+			{
+				bFoundP2 = true;
+				IP2Type = EPCGTriPoint::E_North;
+			}
+			else {
+				bFoundP1 = true;
+				CurrentPoint = IntersectPoint2;
+				IP1Type = EPCGTriPoint::E_North;
+			}
+
+		}
+
+		if (!bFoundP2 && FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B2, CurrentPoint))
+		{
+			if (bFoundP1)
+			{
+				bFoundP2 = true;
+				IP2Type = EPCGTriPoint::E_East;
+			}
+			else {
+				bFoundP1 = true;
+				CurrentPoint = IntersectPoint2;
+				IP1Type = EPCGTriPoint::E_East;
+			}
+		}
+
+		if (!bFoundP2 && FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B2, CurrentPoint))
+		{
+			if (bFoundP1)
+			{
+				bFoundP2 = true;
+				IP2Type = EPCGTriPoint::E_South;
+			}
+			else {
+				bFoundP1 = true;
+				CurrentPoint = IntersectPoint2;
+				IP1Type = EPCGTriPoint::E_South;
+			}
+		}
+
+		if (bFoundP2)
+		{
+			FVector2D P12D = FVector2D(IntersectPoint1);
+			FVector2D P22D = FVector2D(IntersectPoint2);
+
+			float DistAtoP1Sq = FVector2D::DistSquared(VA, P12D);
+			float DistAtoP2Sq = FVector2D::DistSquared(VA, P22D);
+
+			if (DistAtoP1Sq > DistAtoP2Sq)
+			{
+				AddHalfEdgeTempVert(P22D, Edge, EdgeIndex, IP2Type, TmpVerts, HalfEdgeVerts);
+			}
+			else {
+				AddHalfEdgeTempVert(P12D, Edge, EdgeIndex, IP2Type, TmpVerts, HalfEdgeVerts);
+			}
+		}
+	}
+}
+
+void AManualDetourNavMesh::AddHalfEdgeTempVert(FVector2D Location, FPCGTriPoint& Point, int32 EdgeIndex, EPCGTriPoint Type, TArray<FVector2D> &Verts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts)
+{
+	Point.Key = Verts.Num();
+	Point.Value = Type;
+	Verts.Add(Location);
+	HalfEdgeVerts.Add(EdgeIndex, Point);
+}
+
+bool AManualDetourNavMesh::IsInternalSegment(const FPCGTriPoint& A, const FPCGTriPoint& B)
+{
+	/*
+		Check each boundary
+	*/
+	if ((A.Value == EPCGTriPoint::E_East || A.Value == EPCGTriPoint::E_NorthEast || A.Value == EPCGTriPoint::E_SouthEast) &&
+		(B.Value == EPCGTriPoint::E_East || B.Value == EPCGTriPoint::E_NorthEast || B.Value == EPCGTriPoint::E_SouthEast))
+	{
+		return true;
+	}
+
+	if ((A.Value == EPCGTriPoint::E_West || A.Value == EPCGTriPoint::E_NorthWest || A.Value == EPCGTriPoint::E_SouthWest) &&
+		(B.Value == EPCGTriPoint::E_West || B.Value == EPCGTriPoint::E_NorthWest || B.Value == EPCGTriPoint::E_SouthWest))
+	{
+		return true;
+	}
+
+	if ((A.Value == EPCGTriPoint::E_South || A.Value == EPCGTriPoint::E_SouthEast || A.Value == EPCGTriPoint::E_SouthWest) &&
+		(B.Value == EPCGTriPoint::E_South || B.Value == EPCGTriPoint::E_SouthEast || B.Value == EPCGTriPoint::E_SouthWest))
+	{
+		return true;
+	}
+
+	if ((A.Value == EPCGTriPoint::E_North || A.Value == EPCGTriPoint::E_NorthEast || A.Value == EPCGTriPoint::E_NorthWest) &&
+		(B.Value == EPCGTriPoint::E_South || B.Value == EPCGTriPoint::E_NorthEast || B.Value == EPCGTriPoint::E_NorthWest))
+	{
+		return true;
+	}
+	return false;
+}
+
+bool AManualDetourNavMesh::TriangleRelevanceCheck(const FVector2D& A, const FVector2D& B, const FVector2D& C, const FBox2D& Bounds)
+{
+	if (
+		(A.X > Bounds.Max.X &&
+			B.X > Bounds.Max.X &&
+			C.X > Bounds.Max.X) ||
+
+		(A.X < Bounds.Min.X &&
+			B.X < Bounds.Min.X &&
+			C.X < Bounds.Min.X) ||
+
+		(A.Y > Bounds.Max.Y &&
+			B.Y > Bounds.Max.Y &&
+			C.Y > Bounds.Max.Y) ||
+
+		(A.Y < Bounds.Min.Y &&
+			B.Y < Bounds.Min.Y &&
+			C.Y < Bounds.Min.Y)
+		)
+	{
+		return false;
+	}
+	return true;
+}
+
+FString FPCGTriPoint::ToString() const
+{
+	FString Ret = FString::FromInt(Key);
+	Ret.AppendChar(' ');
+
+	switch (Value)
+	{
+	case EPCGTriPoint::E_External:
+		Ret.Append("External");
+		break;
+	case EPCGTriPoint::E_Internal:
+		Ret.Append("Internal");
+		break;
+	case EPCGTriPoint::E_NorthWest:
+		Ret.Append("NorthWest");
+		break;
+	case EPCGTriPoint::E_North:
+		Ret.Append("North");
+		break;
+	case EPCGTriPoint::E_NorthEast:
+		Ret.Append("NorthEast");
+		break;
+	case EPCGTriPoint::E_East:
+		Ret.Append("East");
+		break;
+	case EPCGTriPoint::E_SouthEast:
+		Ret.Append("SouthEast");
+		break;
+	case EPCGTriPoint::E_South:
+		Ret.Append("South");
+		break;
+	case EPCGTriPoint::E_SouthWest:
+		Ret.Append("SouthWest");
+		break;
+	case EPCGTriPoint::E_West:
+		Ret.Append("West");
+		break;
+	}
+
+	return Ret;
+}
+
+FString AManualDetourNavMesh::CornerString(FPCGTriCorners &Corners)
+{
+	FString Ret = FString();
+	if (Corners.NE)
+		Ret.Append(TEXT("NE "));
+	if (Corners.NW)
+		Ret.Append(TEXT("NW "));
+	if (Corners.SE)
+		Ret.Append(TEXT("SE "));
+	if (Corners.SW)
+		Ret.Append(TEXT("SW "));
+	return Ret;
+}
+
+int32 AManualDetourNavMesh::PointCount(FPCGTriPoint& EdgeAB, FPCGTriPoint& EdgeBA, FPCGTriPoint& EdgeBC, FPCGTriPoint& EdgeCB, FPCGTriPoint& EdgeCA, FPCGTriPoint& EdgeAC, FPCGTriPoint& A, FPCGTriPoint& B, FPCGTriPoint& C, FPCGTriCorners& Corners)
+{
+	int32 Count = 0;
+	Count += PointAccum(EdgeAB, Corners);
+	Count += PointAccum(EdgeBA, Corners);
+	Count += PointAccum(EdgeBC, Corners);
+	Count += PointAccum(EdgeCB, Corners);
+	Count += PointAccum(EdgeCA, Corners);
+	Count += PointAccum(EdgeAC, Corners);
+	Count += PointAccum(A, Corners);
+	Count += PointAccum(B,Corners);
+	Count += PointAccum(C, Corners);
+
+	if (Corners.NE)
+	    Count++;
+	if (Corners.NW)
+	    Count++;
+	if (Corners.SE)
+	    Count++;
+	if (Corners.SW)
+	    Count++;
+
+	return Count;
+}
+
+int32 AManualDetourNavMesh::PointAccum(FPCGTriPoint& Point, FPCGTriCorners& Corners)
+{
+	if (Point.Key >= 0)
+	{
+		if (Point.Value == EPCGTriPoint::E_NorthEast)
+			Corners.NE = false;
+		if (Point.Value == EPCGTriPoint::E_SouthEast)
+			Corners.SE = false;
+		if (Point.Value == EPCGTriPoint::E_SouthWest)
+			Corners.SW = false;
+		if (Point.Value == EPCGTriPoint::E_NorthWest)
+			Corners.NW = false;
+		return 1;
+	}
+	return 0;
+}
+
+void AManualDetourNavMesh::LogTriPoly(int32 Index, FPCGTriPoint &EdgeAB, FPCGTriPoint &EdgeBA,FPCGTriPoint &EdgeBC,FPCGTriPoint &EdgeCB,FPCGTriPoint &EdgeCA,FPCGTriPoint &EdgeAC, FPCGTriPoint &A, FPCGTriPoint &B, FPCGTriPoint &C, FPCGTriCorners& Corners)
+{
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Processing triangle %d, PointCount: %d"), Index, PointCount(EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, A, B, C, Corners));
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Point A : %s :: Point B : %s :: Point C %s"), *A.ToString(), *B.ToString(), *C.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge AB : %s :: Edge BA : %s"), *EdgeAB.ToString(), *EdgeBA.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge BC : %s :: Edge CB : %s"), *EdgeBC.ToString(), *EdgeCB.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge CA : %s :: Edge AC : %s"), *EdgeCA.ToString(), *EdgeAC.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Corners: %s"), *CornerString(NE, SE, SW, NW));
 }
