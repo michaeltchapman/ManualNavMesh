@@ -24,6 +24,8 @@ AManualDetourNavMesh::AManualDetourNavMesh()
 	bNoFlags = false;
 	TileCount = 2;
 	GridSubdivisions = 2;
+	TempReservePolys = 256;
+	TempReserveVerts = 256;
 }
 
 AManualDetourNavMesh* AManualDetourNavMesh::GetManualRecastNavMesh(UObject* Context)
@@ -494,6 +496,9 @@ void AManualDetourNavMesh::DebugDrawTileParams(dtNavMeshCreateParams& TileParams
 		int32 PolyStart = i * TileParams.nvp * 2;
 		FVector PolyCentre = GetPolyCentre(TileParams, i);
 
+		// Poly Label
+		DrawDebugString(GetWorld(), PolyCentre, *FString::FromInt(i), 0, FColor::Orange, 999.f);
+
 		for (int32 j = 0; j < TileParams.nvp; j++)
 		{
 			// First vert index for the edge
@@ -515,11 +520,26 @@ void AManualDetourNavMesh::DebugDrawTileParams(dtNavMeshCreateParams& TileParams
 			unsigned short EdgeCode = TileParams.polys[PolyStart + TileParams.nvp + j];
 			FColor EdgeColor = GetEdgeDebugColor(EdgeCode);
 
-			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge %d of poly %2d EdgeCode %4hu (%2hu)-(%2hu) :: %s - %s"), j, i, EdgeCode, Ind1, Ind2, *V1.ToCompactString(), *V2.ToCompactString());
+			// Edge label
+			if (EdgeColor == FColor::Silver)
+			{
+				FVector E = (V1 + V2) * 0.5f;
+				MoveToCentre(E, PolyCentre, DebugThickness);
+				DrawDebugString(GetWorld(), E, *FString::FromInt(EdgeCode), 0, FColor::Green, 999.f);
+			}
+
+			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge %d of poly %2d EdgeCode %4hu (%2hu)-(%2hu) :: %s - %s"), j, i, EdgeCode, Ind1, Ind2, *V1.ToString(), *V2.ToString());
 
 			MoveToCentre(V1, PolyCentre,DebugThickness);
 			MoveToCentre(V2, PolyCentre,DebugThickness);
+
 			DrawDebugLine(GetWorld(), V1, V2, EdgeColor, true, 999.f, 0, DebugThickness);
+
+			MoveToCentre(V1, PolyCentre,DebugThickness);
+
+			// Vertex label
+			DrawDebugString(GetWorld(), V1, *FString::FromInt(Ind1), 0, VertexColor, 999.f);
+
 		}
 	}
 }
@@ -543,9 +563,20 @@ void AManualDetourNavMesh::SetDetourVector(unsigned short* verts, const FVector 
 {
 	const float ncsinv = -1.0f / TileParams.cs;
 	const float chinv = 1.0f / TileParams.ch;
-	verts[Index * 3] = (unsigned short)(FMath::FloorToInt((TileParams.bmin[0] + V.X) * ncsinv));
-	verts[Index * 3 + 1] = (unsigned short)(FMath::FloorToInt((V.Z - TileParams.bmin[1]) * chinv));
-	verts[Index * 3 + 2] = (unsigned short)(FMath::FloorToInt((TileParams.bmin[2] + V.Y) * ncsinv));
+
+	int32 x = FMath::FloorToInt((TileParams.bmin[0] + V.X) * ncsinv);
+	int32 z = FMath::FloorToInt((V.Z - TileParams.bmin[1]) * chinv);
+	int32 y = FMath::FloorToInt((TileParams.bmin[2] + V.Y) * ncsinv);
+
+	verts[Index * 3] = (unsigned short)(x >= 0 ? x : 0);
+	verts[Index * 3 + 1] = (unsigned short)(z >= 0 ? z : 0);
+	verts[Index * 3 + 2] = (unsigned short)(y >= 0 ? y : 0);
+
+	// Correct anything that underflowed. Overflow is really unlikely so we can probably ignore it
+	/*
+	verts[Index * 3] = verts[Index * 3] == 0xffff ? 0 : verts[Index * 3];
+	verts[Index * 3+1] = verts[Index * 3+1] == 0xffff ? 0 : verts[Index * 3+1];
+	verts[Index * 3+2] = verts[Index * 3+2] == 0xffff ? 0 : verts[Index * 3+2];*/
 }
 
 FVector AManualDetourNavMesh::GetPolyCentre(dtNavMeshCreateParams& TileParams, unsigned short Index)
@@ -569,6 +600,51 @@ FVector AManualDetourNavMesh::GetPolyCentre(dtNavMeshCreateParams& TileParams, u
 
 	Ret /= (float)Count;
 	return Ret;
+}
+
+EPCGTriPoint AManualDetourNavMesh::GetCommonEdge(EPCGTriPoint A, EPCGTriPoint B)
+{
+	if ((A == EPCGTriPoint::E_East || A == EPCGTriPoint::E_NorthEast || A == EPCGTriPoint::E_SouthEast) &&
+		(B == EPCGTriPoint::E_East || B == EPCGTriPoint::E_NorthEast || B == EPCGTriPoint::E_SouthEast))
+	{
+		return EPCGTriPoint::E_East;
+	}
+
+	if ((A == EPCGTriPoint::E_West || A == EPCGTriPoint::E_NorthWest || A == EPCGTriPoint::E_SouthWest) &&
+		(B == EPCGTriPoint::E_West || B == EPCGTriPoint::E_NorthWest || B == EPCGTriPoint::E_SouthWest))
+	{
+		return EPCGTriPoint::E_West;
+	}
+
+	if ((A == EPCGTriPoint::E_South || A == EPCGTriPoint::E_SouthEast || A == EPCGTriPoint::E_SouthWest) &&
+		(B == EPCGTriPoint::E_South || B == EPCGTriPoint::E_SouthEast || B == EPCGTriPoint::E_SouthWest))
+	{
+		return EPCGTriPoint::E_South;
+	}
+
+	if ((A == EPCGTriPoint::E_North || A == EPCGTriPoint::E_NorthEast || A == EPCGTriPoint::E_NorthWest) &&
+		(B == EPCGTriPoint::E_North || B == EPCGTriPoint::E_NorthEast || B == EPCGTriPoint::E_NorthWest))
+	{
+		return EPCGTriPoint::E_North;
+	}
+	return EPCGTriPoint::E_External;
+}
+
+unsigned short AManualDetourNavMesh::GetEdgePortal(EPCGTriPoint Edge)
+{
+	switch (Edge)
+	{
+	case EPCGTriPoint::E_West:
+		return 0x8002;
+	case EPCGTriPoint::E_North:
+		return 0x8003;
+	case EPCGTriPoint::E_East:
+		return 0x8000;
+	case EPCGTriPoint::E_South:
+		return 0x8001;
+	default:
+		return RC_MESH_NULL_IDX;
+	}
 }
 
 FColor AManualDetourNavMesh::GetEdgeDebugColor(unsigned short EdgeCode)
@@ -596,6 +672,17 @@ FColor AManualDetourNavMesh::GetEdgeDebugColor(unsigned short EdgeCode)
 		return InternalEdgeColor;
 	}
 
+}
+
+bool AManualDetourNavMesh::IsEdge(EPCGTriMember Member)
+{
+	return (Member == EPCGTriMember::E_AB || Member == EPCGTriMember::E_CA || Member == EPCGTriMember::E_BC ||
+	        Member == EPCGTriMember::E_BA || Member == EPCGTriMember::E_AC || Member == EPCGTriMember::E_CB);
+}
+
+bool AManualDetourNavMesh::IsPoint(EPCGTriMember Member)
+{
+	return (Member == EPCGTriMember::E_A || Member == EPCGTriMember::E_C || Member == EPCGTriMember::E_C);
 }
 
 void AManualDetourNavMesh::MoveToCentre(FVector& InVector, const FVector Centre, float Distance)
@@ -632,19 +719,18 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 
 	unsigned short CellsInTile = FMath::FloorToInt((Bounds.Max.X - Bounds.Min.X) / TileParams.cs);
 
-	TSet<int32> TileTriangles;
-
+	/*
 #if WITH_EDITOR
 	if (bDebugDraw)
 	{
 		DrawDebugBox(GetWorld(), FVector(Bounds.GetCenter(), 0.f), FVector(Bounds.GetExtent(), 1.f), FColor::Cyan, true, 999.f, 0, DebugThickness);
 	}
-#endif
+#endif*/
 
 	TArray<FVector2D> TmpVerts;
 	TmpVerts.Reserve(TempReserveVerts);
 	TArray<unsigned short> TmpPolys;
-	TmpPolys.Reserve(2 * TempReservePolys * 6);
+	TmpPolys.AddDefaulted(2 * TempReservePolys * 6);
 	FMemory::Memset(TmpPolys.GetData(), 0xff, sizeof(unsigned short) * TempReservePolys * 6 * 2);
 
 
@@ -656,8 +742,12 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 	TMap<int32, FPCGTriPoint> HalfEdgeVerts;
 	HalfEdgeVerts.Reserve(TempReserveVerts);
 
-	// First go through all the triangles in the mesh and find the points/tris/edges we're interested in for this tile
-	int32 MaxPolyVerts = 3;
+	// Mapping from triangule in triangulation to poly in tile
+	TMap<int32, int32> PolyMap;
+	PolyMap.Reserve(TempReservePolys);
+
+	// The max we can have is 6. This might be wasteful for some tiles but it shouldn't make a huge difference
+	TileParams.nvp = 6;
 
 	int32 TmpCurrentPoly = 0;
 	for (int32 i = 0; i < Triangulation.Triangles.Num() / 3; i++)
@@ -665,58 +755,66 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 		int32 VertCount = ProcessTriangle(Bounds, i, Triangulation, TmpVerts, TmpPolys, TmpCurrentPoly, InternalVerts, HalfEdgeVerts);
 		if (VertCount > 0)
 		{
-			TileTriangles.Add(i);
 			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Triangle %d has %d verts"), i, VertCount);
+			PolyMap.Add(i, TmpCurrentPoly);
+
+			URegionDistribution::DrawTriangle(this, i, Triangulation, 1.f, i);
+
+			// Swap winding order ?
+			//ReversePolyVertOrder(TmpCurrentPoly, VertCount, TmpPolys);
+
+			TmpCurrentPoly++;
 		}
-		MaxPolyVerts = FMath::Max(MaxPolyVerts, VertCount);
 	}
 //	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("MaxPolyVerts for tile %d, Corner Verts %d, EdgeVerts, %d, InternalVerts %d"), MaxPolyVerts, CornerVerts, EdgeVerts, InternalVerts.Num());
+	// Vertices per polygon
+	TileParams.vertCount = TmpVerts.Num();
+	TileParams.polyCount = PolyMap.Num();
 
+	/*
 #if WITH_EDITOR
 	if (bDebugDraw)
 	{
-		for (auto Tri : TileTriangles)
+		for (auto Tri : PolyMap)
 		{
-			URegionDistribution::DrawTriangle(this, Tri, Triangulation, DebugThickness, Tri);
+			URegionDistribution::DrawTriangle(this, Tri.Value, Triangulation, DebugThickness, Tri.Value);
 		}
 	}
 #endif WITH_EDITOR
+*/
 
-	// Vertices per polygon
-	TileParams.nvp = MaxPolyVerts;
-
-	// Vertices per polygon
-	TileParams.vertCount = 4;
-
-	// Number of polys in the tile
-	TileParams.polyCount = 1;
-
-	// These will be the same apart from fixed interval vs floating point.
 	unsigned short* verts = (unsigned short*)FMemory::Malloc(sizeof(unsigned short) * TileParams.vertCount * 3);
-
-	SetDetourVector(verts, FVector(Bounds.Min.X, Bounds.Min.Y, GetHeightAt(Bounds.Min.X, Bounds.Min.Y)), 0, TileParams);
-	SetDetourVector(verts, FVector(Bounds.Max.X, Bounds.Min.Y, GetHeightAt(Bounds.Max.X, Bounds.Min.Y)), 1, TileParams);
-	SetDetourVector(verts, FVector(Bounds.Max.X, Bounds.Max.Y, GetHeightAt(Bounds.Max.X, Bounds.Max.Y)), 2, TileParams);
-	SetDetourVector(verts, FVector(Bounds.Min.X, Bounds.Max.Y, GetHeightAt(Bounds.Min.X, Bounds.Max.Y)), 3, TileParams);
-
-	// This is list of vert indices with additional edge flags. 0xFF means no vert index and solid border edge
 	unsigned short* polys = (unsigned short*)FMemory::Malloc(sizeof(unsigned short) * TileParams.polyCount * TileParams.nvp * 2);
-	memset(polys, 0xff, sizeof(unsigned short) * TileParams.polyCount * TileParams.nvp * 2);
-	polys[0] = 0;
-	polys[1] = 1;
-	polys[2] = 2;
-	polys[3] = 3;
 
+	FMemory::Memcpy(polys, TmpPolys.GetData(), sizeof(unsigned short) * TileParams.polyCount * TileParams.nvp * 2);
 
-	// Then go through the points for each triangle and snap them to the cell grid.
-	// Have the lower triangle index "own" the vertex, so a neighbour with higher index can get the vert from there
-	// There's the chance we need to clean up the input points for cases where points are too close to each other and need to be merged
-	// It's a bit easier to determine if edges lie exactly along the boundary when they're expressed as ints/shorts so do that instead of working with floats
-	// - except determining the intersection point between the edge and the tile bounds which might be better to do with floats (?)
-	for (auto Tri : TileTriangles)
+	for (int32 i = 0; i < TmpVerts.Num(); i++)
 	{
-		AddTriToPoly(Tri, TileParams, Triangulation, verts, polys);
+		SetDetourVector(verts, FVector(TmpVerts[i].X, TmpVerts[i].Y, 0.f), i, TileParams);
 	}
+
+	// TODO memcpy tmppolys to polys
+	for (int32 i = 0; i < PolyMap.Num(); i++)
+	{
+		int32 PolyIdx = i * TileParams.nvp * 2;
+		int32 AdjacencyIdx = PolyIdx + TileParams.nvp;
+		for (int32 j = AdjacencyIdx; j < AdjacencyIdx + TileParams.nvp; j++)
+		{
+			if (!IsBorder(TmpPolys[j]))
+			{
+				int32* MappedPoly = PolyMap.Find((int32)TmpPolys[j]);
+				if (MappedPoly)
+				{
+					polys[j] = (unsigned short)*MappedPoly;
+
+				}
+				else {
+					UE_LOG(LogManualNavMesh, Warning, TEXT("Poly %d not found in poly map for index %d, poly %d"), TmpPolys[j], j, i);
+				}
+			}
+		}
+	}
+
 
 	// This is area IDs, not the area of the polygon.
 	unsigned char* PolyAreas = (unsigned char*)FMemory::Malloc(sizeof(unsigned char) * TileParams.polyCount);
@@ -734,7 +832,16 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 	else {
 		FMemory::Memset(PolyFlags, 0x0001, sizeof(unsigned short) * TileParams.polyCount);
 	}
-	TileParams.polyFlags = PolyFlags;
+
+	for (auto Region : SourceMap->GetImpassableRegions())
+	{
+		int32* MappedPoly = PolyMap.Find(Region);
+		if (MappedPoly)
+		{
+			PolyFlags[*MappedPoly] = 0x00;
+			PolyAreas[*MappedPoly] = RC_NULL_AREA;
+		}
+	}
 
 	// Off mesh connections
 	TileParams.offMeshConCount = 0;
@@ -754,7 +861,7 @@ void AManualDetourNavMesh::MakeTriangulationTile(dtNavMeshCreateParams& TilePara
 }
 
 int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation,
-		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts)
+		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts)
 {
 	int32 Ai = Triangulation.Triangles[3 * TriIndex];
 	int32 Bi = Triangulation.Triangles[3 * TriIndex+1];
@@ -767,6 +874,7 @@ int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex
 	// Do a quick check to see if all points are on a single side of the bounds
 	if (!TriangleRelevanceCheck(A, B, C, Bounds))
 	{
+		UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Triangle %d with points %d %d %d failed relevance check, skipping"), TriIndex, Ai, Bi, Ci);
 		return 0;
 	}
 
@@ -775,10 +883,19 @@ int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex
 	FPCGTriPoint Bv = ProcessPoint(Bi, Bounds, Triangulation.Coords, TmpVerts, InternalVerts);
 	FPCGTriPoint Cv = ProcessPoint(Ci, Bounds, Triangulation.Coords, TmpVerts, InternalVerts);
 
+	TriPointArray PointsToPlace;
+	FPCGTriCorners Corners;
+
 	// If all points are within the bounds, we can create the poly and get outta here
-	if (Av.Key >= 0 && Bv.Key >= 0 && Cv.Key >= 0)
+	if (Av.Index >= 0 && Bv.Index >= 0 && Cv.Index >= 0)
 	{
+		UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing internal triangle %d at poly %d with points %d %d %d"), TriIndex, CurrentPoly, Ai, Bi, Ci);
 		// TODO make poly
+		PointsToPlace.Add(TriPointType(&Av, EPCGTriMember::E_A));
+		PointsToPlace.Add(TriPointType(&Bv, EPCGTriMember::E_B));
+		PointsToPlace.Add(TriPointType(&Cv, EPCGTriMember::E_C));
+
+		PlacePoints(CurrentPoly, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation, Bounds);
 		return 3;
 	}
 
@@ -786,7 +903,6 @@ int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex
 	// If all the corners are within this triangle we can make a quad and be done. This
 	// also prevents having to handle this case when walking along edges, which would be
 	// quite awkward without any obvious starting point
-	FPCGTriCorners Corners;
 
 	FVector2D B1 = FVector2D(Bounds.Min.X, Bounds.Max.Y);
 	FVector2D B2 = FVector2D(Bounds.Max.X, Bounds.Min.Y);
@@ -798,6 +914,19 @@ int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex
 	{
 		// Triangle contains the entire tile
 		// TODO make poly
+		UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing triangle %d at poly %d with all corner points"), TriIndex, CurrentPoly, Ai, Bi, Ci);
+		TmpVerts.Add(Bounds.Min);
+		TmpVerts.Add(B2);
+		TmpVerts.Add(Bounds.Max);
+		TmpVerts.Add(B1);
+		TmpPolys[0] = 0;
+		TmpPolys[1] = 1;
+		TmpPolys[2] = 2;
+		TmpPolys[3] = 3;
+		TmpPolys[6 + 0] = GetEdgePortal(EPCGTriPoint::E_South);
+		TmpPolys[6 + 1] = GetEdgePortal(EPCGTriPoint::E_East);
+		TmpPolys[6 + 2] = GetEdgePortal(EPCGTriPoint::E_North);
+		TmpPolys[6 + 3] = GetEdgePortal(EPCGTriPoint::E_West);
 		return 4;
 	}
 
@@ -808,13 +937,14 @@ int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex
 	ProcessEdge(EdgeBC, EdgeCB, 3*TriIndex+1, Bv, Cv, Bounds, Triangulation, TmpVerts, TmpPolys, CurrentPoly, InternalVerts, HalfEdgeVerts);
 	ProcessEdge(EdgeCA, EdgeAC, 3*TriIndex+2, Cv, Av, Bounds, Triangulation, TmpVerts, TmpPolys, CurrentPoly, InternalVerts, HalfEdgeVerts);
 
-	LogTriPoly(TriIndex, EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, Av, Bv, Cv, NE, SE, SW, NW);
-	int32 Count = PointCount(EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, Av, Bv, Cv, NE, SE, SW, NW);
+	LogTriPoly(TriIndex, EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, Av, Bv, Cv, Corners, Triangulation);
+	int32 Count = PointCount(EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, Av, Bv, Cv, Corners);
 
 	// If there's less than 3 valid points then we might have found two edge vertices with the third pointing externally
 	// which is a valid triangle but not for this tile
 	if (Count < 3)
 	{
+		UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Triangle %d has %d points which is not enough, skipping"), TriIndex, Count);
 		return Count;
 	}
 
@@ -842,65 +972,359 @@ int32 AManualDetourNavMesh::ProcessTriangle(const FBox2D& Bounds, int32 TriIndex
 	// Any time we cross an edge we need to track which edge it was. If we return via a different edge we need to
 	// check which corners are available in order to get from the egress to the ingress point cleanly
 
-	TriPointArray PointsToPlace;
-	if (Av.Key >= 0)
-		PointsToPlace.Add(TriPointType(&Av, true));
-	if (EdgeAB.Key >= 0)
-		PointsToPlace.Add(TriPointType(&EdgeAB, false));
-	if (EdgeBA.Key >= 0)
-		PointsToPlace.Add(TriPointType(&EdgeBA, false));
+	if (Av.Index >= 0)
+		PointsToPlace.Add(TriPointType(&Av, EPCGTriMember::E_A));
+	if (EdgeAB.Index >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeAB, EPCGTriMember::E_AB));
+	if (EdgeBA.Index >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeBA, EPCGTriMember::E_BA));
 	
-	if (Bv.Key >= 0)
-		PointsToPlace.Add(TriPointType(&Bv, true));
-	if (EdgeBC.Key >= 0)
-		PointsToPlace.Add(TriPointType(&EdgeBC, false));
-	if (EdgeCB.Key >= 0)
-		PointsToPlace.Add(TriPointType(&EdgeCB, false));
+	if (Bv.Index >= 0)
+		PointsToPlace.Add(TriPointType(&Bv, EPCGTriMember::E_B));
+	if (EdgeBC.Index >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeBC, EPCGTriMember::E_BC));
+	if (EdgeCB.Index >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeCB, EPCGTriMember::E_CB));
 
-	if (Cv.Key >= 0)
-		PointsToPlace.Add(TriPointType(&Cv, true));
-	if (EdgeCA.Key >= 0)
-		PointsToPlace.Add(TriPointType(&EdgeCA, false));
-	if (EdgeAC.Key >= 0)
-		PointsToPlace.Add(TriPointType(&EdgeAC, false));
+	if (Cv.Index >= 0)
+		PointsToPlace.Add(TriPointType(&Cv, EPCGTriMember::E_C));
+	if (EdgeCA.Index >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeCA, EPCGTriMember::E_CA));
+	if (EdgeAC.Index >= 0)
+		PointsToPlace.Add(TriPointType(&EdgeAC, EPCGTriMember::E_AC));
 
-	PlacePoints(CurrentPoly, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation);
-	CurrentPoly++;
+	PlacePoints(CurrentPoly, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation, Bounds);
 	return Count;
 }
 
-
-
-bool AManualDetourNavMesh::PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray &PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
-	TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners &Corners, const FPCGDelaunayTriangulation& Triangulation)
+void AManualDetourNavMesh::PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray &PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+	TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners &Corners, const FPCGDelaunayTriangulation& Triangulation, const FBox2D &Bounds)
 {
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing Triangle %d into poly %d, has %d points"), TriIndex, PolyIndex, PointsToPlace.Num());
+	int32 PlaceIndex = 0;
 	for (int32 i = 0; i < PointsToPlace.Num(); i++)
 	{
-		TriPointType& PreviousPoint = i == 0 ? PointsToPlace.Last() : PointsToPlace[i - 1];
+		//TriPointType& PreviousPoint = i == 0 ? PointsToPlace.Last() : PointsToPlace[i - 1];
 		TriPointType& CurrentPoint = PointsToPlace[i];
-
-		// if current point is a half edge and previous point is a half edge, and the edge doesn't match, pull in corners
-		if (!PreviousPoint.Value && !CurrentPoint.Value && CurrentPoint.Key->Value != PreviousPoint.Key->Value)
-		{
-			// add needed corner(s)
-			PlaceCorners(CurrentPoint, PreviousPoint, PolyIndex, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation);
-		}
+		TriPointType& NextPoint = i == PointsToPlace.Num() - 1 ? PointsToPlace[0] : PointsToPlace[i + 1];
 
 		// need the poly index so we can place in the right spot
 		// Add vertex to tmppolys
+		unsigned short VertIdx = (unsigned short)CurrentPoint.Key->Index;
+		TmpPolys[6 * PolyIndex * 2 + PlaceIndex] = VertIdx;
 
-		// need the triangulation so we can connect to adjacent polys.
 		// Use the triangulation's numbering since we won't know the corrected numbering until everything has been placed
-			// TODO actually we could do reciprocal updates as we go?
-		// Add adjacency to tmppolys
+			// TODO actually we could do reciprocal updates as we go if we were able to store where each edge was stored within
+			// the poly. It can't go into the halfedgemap because some (most) edges with adjacents won't be in there as they go directly
+			// between two internal vertices. Perhaps another map is worth it to avoid another loop over all polys in the tile
 
+		// if current point is a half edge, the next point is a half edge, and the edges can't connect
+		// directly to each other (eg. if one of them is a corner already),
+		// add corners before we move on to the next point. Corner placement will handle the adjacency 
+		// for the current point since NextPoint is not actually the next point in this case.
+
+		// TODO need to handle the triangle case where we only have eg. CA -> AC with a corner connecting them
+		// The corner will be added twice unless we ensure that CA -> AC doesn't match this case
+		// If travelling from HE2 to HE1, don't add the corner? Ie. don't match on AC->CA, BA->AB, CB -> BC but do match on the reverse.
+		// It's the inverse : *only* create corners when travelling BA->, CB-> or AC->
+
+		if (IsEdge(NextPoint.Value) && IsEdge(CurrentPoint.Value) && GetCommonEdge(CurrentPoint.Key->Point, NextPoint.Key->Point) == EPCGTriPoint::E_External && ReverseEdgeCheck(CurrentPoint.Value, NextPoint.Value))
+		{
+			// add needed corner(s) and add current edge adjacency
+			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing corners in Triangle %d, poly %d, between %d and %d"), TriIndex, PolyIndex, i, i == PointsToPlace.Num() - 1 ? 0 : i + 1);
+			if (!PlaceCorners(PlaceIndex, CurrentPoint, NextPoint, PolyIndex, TriIndex, PointsToPlace, TmpVerts, TmpPolys, InternalVerts, HalfEdgeVerts, Corners, Triangulation, Bounds))
+			{
+				UE_LOG(LogManualNavMesh, Warning, TEXT("Failed to place corners"));
+				break;
+			}
+		}
+		else {
+			// Add adjacency to tmppolys for the current edge, if it exists
+			EPCGTriPoint CurrentEdge = GetCommonEdge(CurrentPoint.Key->Point, NextPoint.Key->Point);
+			// portal/border case
+			unsigned short BorderIndex = 6 * PolyIndex * 2 + 6 + PlaceIndex;
+			if (CurrentEdge != EPCGTriPoint::E_External)
+			{
+				UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing edge portal in Triangle %d, poly %d, for edge %d"), TriIndex, PolyIndex, i);
+				TmpPolys[BorderIndex] = GetEdgePortal(CurrentEdge);
+			}
+			// adjacent poly case
+			else {
+				// Index of the triangle in Triangulation that we border
+				unsigned short AdjacentTri = GetAdjacentPoly(Triangulation, TriIndex, CurrentPoint, NextPoint);
+				TmpPolys[BorderIndex] = AdjacentTri;
+
+				UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing adjacency in Triangle %d, poly %d, edge %d (%s-%s) connects to poly %d"), TriIndex, PolyIndex, i, *TriMemberToString(CurrentPoint.Value), *TriMemberToString(NextPoint.Value), (int32)AdjacentTri);
+			}
+		}
+
+		PlaceIndex++;
+	}
+
+	LogPlacedPoly(PolyIndex, TmpPolys);
+
+}
+
+bool AManualDetourNavMesh::PlaceCorners(int32 &PlaceIndex, TriPointType& CurrentPoint, TriPointType& NextPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+	TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const FBox2D &Bounds)
+{
+	EPCGTriPoint StartEdge = CurrentPoint.Key->Point;
+	EPCGTriPoint EndEdge = NextPoint.Key->Point;
+
+	EPCGTriPoint CurrentEdge = StartEdge;
+	EPCGTriPoint NextEdge = GetNextEdge(CurrentEdge, StartEdge, EndEdge, Corners);
+
+	// Insert adjacency for the current (half edge) point
+	TmpPolys[6 * PolyIndex * 2 + 6 + PlaceIndex] = GetEdgePortal(GetCommonEdge(NextEdge, CurrentEdge));
+
+	//EPCGTriPoint PreviousEdge = StartEdge;
+
+	while (NextEdge != EndEdge)
+	{
+		PlaceIndex++;
+		//PreviousEdge = CurrentEdge;
+
+		CurrentEdge = NextEdge;
+
+		// Get an edge connected to the currentedge towards end edge
+		NextEdge = GetNextEdge(CurrentEdge, StartEdge, EndEdge, Corners);
+
+		FPCGTriPoint CornerPoint = FPCGTriPoint(TmpVerts.Num(), CurrentEdge);
+		TmpVerts.Add(CornerEdgeToVert(CurrentEdge, Bounds));
+
+		unsigned short Border = GetEdgePortal(GetCommonEdge(CurrentEdge, NextEdge));
+		TmpPolys[6 * PolyIndex * 2 + 6 + PlaceIndex] = Border;
+
+		// place vert in poly
+		unsigned short VertIdx = (unsigned short)CornerPoint.Index;
+		TmpPolys[6 * PolyIndex * 2 + PlaceIndex] = VertIdx;
+
+		UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placing corner %s in triangle %d since %s is followed by %s and tri contains the corners %s"), *CornerPoint.ToString(), TriIndex, *CurrentPoint.Key->ToString(), *NextPoint.Key->ToString(), *CornerString(Corners));
+
+		if (PlaceIndex > 4)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+FVector2D AManualDetourNavMesh::CornerEdgeToVert(EPCGTriPoint CornerEdge, const FBox2D& Bounds)
+{
+	switch (CornerEdge)
+	{
+	case EPCGTriPoint::E_NorthEast:
+		return Bounds.Max;
+	case EPCGTriPoint::E_SouthWest:
+		return Bounds.Min;
+	case EPCGTriPoint::E_NorthWest:
+		return FVector2D(Bounds.Min.X, Bounds.Max.Y);
+	case EPCGTriPoint::E_SouthEast:
+		return FVector2D(Bounds.Max.X, Bounds.Min.Y);
+	}
+	return FVector2D::ZeroVector;
+}
+
+EPCGTriMember AManualDetourNavMesh::GetConnectingEdge(EPCGTriMember P1, EPCGTriMember P2)
+{
+	if ((P1 == EPCGTriMember::E_A && P2 == EPCGTriMember::E_B) ||
+		(P1 == EPCGTriMember::E_A && P2 == EPCGTriMember::E_BA) ||
+		(P1 == EPCGTriMember::E_AB && P2 == EPCGTriMember::E_B) ||
+		(P1 == EPCGTriMember::E_AB && P2 == EPCGTriMember::E_BA) ||
+		(P1 == EPCGTriMember::E_BA && P2 == EPCGTriMember::E_B))
+	{
+		return EPCGTriMember::E_AB;
+	}
+
+	if ((P1 == EPCGTriMember::E_B && P2 == EPCGTriMember::E_C) ||
+		(P1 == EPCGTriMember::E_B && P2 == EPCGTriMember::E_CB) ||
+		(P1 == EPCGTriMember::E_BC && P2 == EPCGTriMember::E_C) ||
+		(P1 == EPCGTriMember::E_BC && P2 == EPCGTriMember::E_CB) ||
+		(P1 == EPCGTriMember::E_CB && P2 == EPCGTriMember::E_C))
+	{
+		return EPCGTriMember::E_BC;
+	}
+
+	if ((P1 == EPCGTriMember::E_C && P2 == EPCGTriMember::E_A) ||
+		(P1 == EPCGTriMember::E_C && P2 == EPCGTriMember::E_AC) ||
+		(P1 == EPCGTriMember::E_CA && P2 == EPCGTriMember::E_A) ||
+		(P1 == EPCGTriMember::E_CA && P2 == EPCGTriMember::E_AC) ||
+		(P1 == EPCGTriMember::E_AC && P2 == EPCGTriMember::E_A))
+	{
+		return EPCGTriMember::E_CA;
+	}
+
+	return EPCGTriMember::E_A;
+}
+
+unsigned short AManualDetourNavMesh::ConnectingEdgeToOffset(EPCGTriMember Edge)
+{
+	switch (Edge)
+	{
+	case EPCGTriMember::E_AB:
+		return 0;
+	case EPCGTriMember::E_BC:
+		return 1;
+	case EPCGTriMember::E_CA:
+		return 2;
+	default:
+		return RC_MESH_NULL_IDX;
 	}
 }
 
-bool AManualDetourNavMesh::PlaceCorners(TriPointType& CurrentPoint, TriPointType& PreviousPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
-	TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation)
+unsigned short AManualDetourNavMesh::GetAdjacentPoly(const FPCGDelaunayTriangulation& Triangulation, int32 TriIndex, TriPointType &CurrentPoint, TriPointType &NextPoint)
 {
-	return true;
+	unsigned short HalfEdgeIdx = TriIndex * 3;
+
+	// This doesn't account for the edge pair being the provider of the point - it always looks
+	// for the current triangle's halfedge.
+	EPCGTriMember ConnectingEdge = GetConnectingEdge(CurrentPoint.Value, NextPoint.Value);
+	unsigned short Offset = ConnectingEdgeToOffset(ConnectingEdge);
+
+	if (Offset == RC_MESH_NULL_IDX)
+	{
+		return Offset;
+	}
+
+	HalfEdgeIdx += ConnectingEdgeToOffset(ConnectingEdge);
+	int32 HalfEdgePair = Triangulation.HalfEdges[HalfEdgeIdx];
+	if (HalfEdgePair < 0)
+	{
+		return RC_MESH_NULL_IDX;
+	}
+	else {
+		return (unsigned short) Triangulation.TriangleOfEdge(HalfEdgePair);
+	}
+
+}
+
+EPCGTriPoint AManualDetourNavMesh::GetNextEdge(EPCGTriPoint CurrentEdge, EPCGTriPoint StartEdge, EPCGTriPoint EndEdge, FPCGTriCorners& Corners)
+{
+	// If we're on an edge then move to a corner we're connected to
+	// This only happens for the first movement
+	if (CurrentEdge == EPCGTriPoint::E_East)
+	{
+		if (Corners.NE)
+			return EPCGTriPoint::E_NorthEast;
+		if (Corners.SE)
+			return EPCGTriPoint::E_SouthEast;
+	}
+
+	if (CurrentEdge == EPCGTriPoint::E_West)
+	{
+		if (Corners.NW)
+			return EPCGTriPoint::E_NorthWest;
+		if (Corners.SW)
+			return EPCGTriPoint::E_SouthWest;
+	}
+
+	if (CurrentEdge == EPCGTriPoint::E_North)
+	{
+		if (Corners.NW)
+			return EPCGTriPoint::E_NorthWest;
+		if (Corners.NE)
+			return EPCGTriPoint::E_NorthEast;
+	}
+
+	if (CurrentEdge == EPCGTriPoint::E_South)
+	{
+		if (Corners.SW)
+			return EPCGTriPoint::E_SouthWest;
+		if (Corners.SE)
+			return EPCGTriPoint::E_SouthEast;
+	}
+
+	if (CornerDistToEdge(CurrentEdge, EndEdge) == 1)
+		return EndEdge;
+
+	return GetNextCornerEdge(CurrentEdge, EndEdge, Corners);
+}
+
+EPCGTriPoint AManualDetourNavMesh::GetNextCornerEdge(EPCGTriPoint Corner, EPCGTriPoint Destination, FPCGTriCorners& Corners)
+{
+	EPCGTriPoint Ret = EPCGTriPoint::E_External;
+	int32 RetI = 5;
+
+	if (Corners.SW && CornerDistToEdge(EPCGTriPoint::E_SouthWest, Destination) < RetI)
+	{
+		Ret = EPCGTriPoint::E_SouthWest;
+		RetI = CornerDistToEdge(EPCGTriPoint::E_SouthWest, Destination);
+	}
+
+	if (Corners.NW && CornerDistToEdge(EPCGTriPoint::E_NorthWest, Destination) < RetI)
+	{
+		Ret = EPCGTriPoint::E_NorthWest;
+		RetI = CornerDistToEdge(EPCGTriPoint::E_NorthWest, Destination);
+	}
+
+	if (Corners.SE && CornerDistToEdge(EPCGTriPoint::E_SouthEast, Destination) < RetI)
+	{
+		Ret = EPCGTriPoint::E_SouthEast;
+		RetI = CornerDistToEdge(EPCGTriPoint::E_SouthEast, Destination);
+	}
+	if (Corners.NE && CornerDistToEdge(EPCGTriPoint::E_NorthEast, Destination) < RetI)
+	{
+		Ret = EPCGTriPoint::E_NorthEast;
+		RetI = CornerDistToEdge(EPCGTriPoint::E_NorthEast, Destination);
+	}
+
+	return Ret;
+}
+
+int32 AManualDetourNavMesh::CornerDistToEdge(EPCGTriPoint Corner, EPCGTriPoint Destination)
+{
+	if (Corner == Destination)
+	{
+		return 0;
+	}
+
+	if (Corner == EPCGTriPoint::E_NorthEast)
+	{
+		if (Destination == EPCGTriPoint::E_East || Destination == EPCGTriPoint::E_North)
+			return 1;
+		if (Destination == EPCGTriPoint::E_NorthWest || Destination == EPCGTriPoint::E_SouthEast)
+			return 2;
+		if (Destination == EPCGTriPoint::E_West || Destination == EPCGTriPoint::E_South)
+			return 3;
+		if (Destination == EPCGTriPoint::E_SouthWest)
+			return 4;
+	}
+
+	if (Corner == EPCGTriPoint::E_NorthWest)
+	{
+		if (Destination == EPCGTriPoint::E_West || Destination == EPCGTriPoint::E_North)
+			return 1;
+		if (Destination == EPCGTriPoint::E_NorthEast || Destination == EPCGTriPoint::E_SouthWest)
+			return 2;
+		if (Destination == EPCGTriPoint::E_East || Destination == EPCGTriPoint::E_South)
+			return 3;
+		if (Destination == EPCGTriPoint::E_SouthEast)
+			return 4;
+	}
+	if (Corner == EPCGTriPoint::E_SouthEast)
+	{
+		if (Destination == EPCGTriPoint::E_East || Destination == EPCGTriPoint::E_South)
+			return 1;
+		if (Destination == EPCGTriPoint::E_SouthWest || Destination == EPCGTriPoint::E_NorthEast)
+			return 2;
+		if (Destination == EPCGTriPoint::E_West || Destination == EPCGTriPoint::E_North)
+			return 3;
+		if (Destination == EPCGTriPoint::E_NorthWest)
+			return 4;
+	}
+	if (Corner == EPCGTriPoint::E_SouthWest)
+	{
+		if (Destination == EPCGTriPoint::E_West || Destination == EPCGTriPoint::E_South)
+			return 1;
+		if (Destination == EPCGTriPoint::E_SouthEast || Destination == EPCGTriPoint::E_NorthWest)
+			return 2;
+		if (Destination == EPCGTriPoint::E_East || Destination == EPCGTriPoint::E_North)
+			return 3;
+		if (Destination == EPCGTriPoint::E_NorthEast)
+			return 4;
+	}
+	return 0;
 }
 
 FPCGTriPoint AManualDetourNavMesh::ProcessPoint(int32 PointIndex, const FBox2D& Bounds, const TArray<FVector2D>& Coords, TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& InternalVerts)
@@ -970,7 +1394,7 @@ FPCGTriPoint AManualDetourNavMesh::ProcessPoint(int32 PointIndex, const FBox2D& 
 			TP = FPCGTriPoint(PV, EPCGTriPoint::E_North);
 		}
 
-		if (TP.Value == EPCGTriPoint::E_External)
+		if (TP.Point == EPCGTriPoint::E_External)
 		{
 			UE_LOG(LogManualNavMesh, Warning, TEXT("point %d (%s) lies within the border but wasn't assigned an internal code"), PointIndex, *TestPoint.ToString());
 		}
@@ -1006,10 +1430,10 @@ void AManualDetourNavMesh::ProcessEdge(FPCGTriPoint& Edge1, FPCGTriPoint& Edge2,
 	/*
 		A Key of -1 indicates nothing is here since it's meant to be the value of this point in TmpVerts.
 	*/
-	Edge1.Key = -1;
-	Edge2.Key = -1;
-	Edge1.Value = EPCGTriPoint::E_External;
-	Edge2.Value = EPCGTriPoint::E_External;
+	Edge1.Index = -1;
+	Edge2.Index = -1;
+	Edge1.Point = EPCGTriPoint::E_External;
+	Edge2.Point = EPCGTriPoint::E_External;
 
 	// The very first thing to test is colinear case 3, since we want to ignore all checks on those types of segments and just use the
 	// points as-is without adjustment, and they'll cause problems with both colinear tests and intersection tests.
@@ -1022,24 +1446,25 @@ void AManualDetourNavMesh::ProcessEdge(FPCGTriPoint& Edge1, FPCGTriPoint& Edge2,
 	FPCGTriPoint* E1 = HalfEdgeVerts.Find(EdgeIndex);
 	if (E1)
 	{
-		Edge1.Key = E1->Key;
-		Edge1.Value = E1->Value;
+		Edge1.Index = E1->Index;
+		Edge1.Point = E1->Point;
 	}
+
 	int32 Edge2Index = Triangulation.HalfEdges[EdgeIndex] >= 0 ? Triangulation.HalfEdges[EdgeIndex] : -1;
-	if (Edge2Index < 0)
+	if (Edge2Index >= 0)
 	{
 		FPCGTriPoint* E2 = HalfEdgeVerts.Find(Edge2Index);
 		if (E2)
 		{
-			Edge2.Key = E2->Key;
-			Edge2.Value = E2->Value;
+			Edge2.Index = E2->Index;
+			Edge2.Point = E2->Point;
 		}
 	}
 
 	// Edge was already processed by our neighbour
 	// TODO add an unprocessed option to the ENUM so we can track edges that didn't match
 	// as well and prevent double-testing everything that isn't relevant
-	if (Edge1.Key >= 0 || Edge2.Key >= 0)
+	if (Edge1.Index >= 0 || Edge2.Index >= 0)
 	{
 		return;
 	}
@@ -1056,7 +1481,7 @@ void AManualDetourNavMesh::ProcessEdge(FPCGTriPoint& Edge1, FPCGTriPoint& Edge2,
 	ColinearEdgeCheck(Edge2, Edge2Index, B, A, VertB, VertA, Bounds, Triangulation, TmpVerts, HalfEdgeVerts);
 
 	// Edge was colinear, we are done 
-	if (Edge1.Key >= 0 || Edge2.Key >= 0)
+	if (Edge1.Index >= 0 || Edge2.Index >= 0)
 	{
 		return;
 	}
@@ -1085,7 +1510,7 @@ void AManualDetourNavMesh::ColinearEdgeCheck(FPCGTriPoint& Edge, int32 EdgeIndex
 			else if (VA.Y > Bounds.Max.Y && VB.Y < Bounds.Max.Y)
 			{
 				// A is North of the East boundary and B is either on or South of it
-				AddHalfEdgeTempVert(FVector2D(Bounds.Max.X, Bounds.Min.Y), Edge,EdgeIndex, EPCGTriPoint::E_NorthEast, TmpVerts, HalfEdgeVerts);
+				AddHalfEdgeTempVert(Bounds.Max, Edge,EdgeIndex, EPCGTriPoint::E_NorthEast, TmpVerts, HalfEdgeVerts);
 			}
 		}
 		// AB Colinear with West Boundary
@@ -1117,7 +1542,7 @@ void AManualDetourNavMesh::ColinearEdgeCheck(FPCGTriPoint& Edge, int32 EdgeIndex
 			else if (VA.X > Bounds.Max.X && VB.X < Bounds.Max.X)
 			{
 				// A is East of the North boundary and B is either on or West of it
-				AddHalfEdgeTempVert(FVector2D(Bounds.Max.X, Bounds.Min.Y), Edge,EdgeIndex, EPCGTriPoint::E_NorthEast, TmpVerts, HalfEdgeVerts);
+				AddHalfEdgeTempVert(Bounds.Max, Edge,EdgeIndex, EPCGTriPoint::E_NorthEast, TmpVerts, HalfEdgeVerts);
 			}
 		}
 		// AB Colinear with South Boundary
@@ -1144,7 +1569,7 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 
 	// Intersection test. Only return positive result when A is external and B is internal, or return the
 	// closer result to A if both are external.
-	if (PA.Value != EPCGTriPoint::E_External)
+	if (PA.Point != EPCGTriPoint::E_External)
 	{
 		return;
 	}
@@ -1153,10 +1578,14 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 	FVector B2 = FVector(Bounds.Max.X, Bounds.Min.Y, 0.f);
 
 	// Note that we don't want cases where B is on the edge, only actual internal points give intersections 
-	if (PA.Value == EPCGTriPoint::E_External && PB.Value == EPCGTriPoint::E_Internal)
-	{
+	// WRONG! we could have B on the edge or in a corner and the external all the way on the other side
+	// of the tile -_-
+	// This complicates things because the intersect point we want in these cases won't be unique, we'll have
+	// to filter out the intersections the corner has with its own edges, for example (or not test at all?)
 
-		// TODO this might need to be corrected to the corner in the unlikely event the segment intersects with the corner
+	// TODO this might need to be corrected to the corner in the unlikely event the segment intersects with the corner
+	if (PA.Point == EPCGTriPoint::E_External && PB.Point != EPCGTriPoint::E_External)
+	{
 		DrawDebugLine(GetWorld(), FVector(VA, 0.f), FVector(VB, 0.f), FColor::Purple, true, 999.f, 0, 2.f);
 
 		DrawDebugLine(GetWorld(), FVector(Bounds.Min, 0.f), B1, FColor::Red, true, 999.f, 0, 2.f);
@@ -1165,38 +1594,51 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 		DrawDebugLine(GetWorld(), FVector(Bounds.Min, 0.f), B2, FColor::Green, true, 999.f, 0, 2.f);
 
 		FVector IntersectPoint;
-		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B1, IntersectPoint))
+
+		if (PB.Point != EPCGTriPoint::E_West && PB.Point != EPCGTriPoint::E_NorthWest && PB.Point != EPCGTriPoint::E_SouthWest)
 		{
-			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_West, TmpVerts, HalfEdgeVerts);
-			return;
+			if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B1, IntersectPoint))
+			{
+				AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_West, TmpVerts, HalfEdgeVerts);
+				return;
+			}
 		}
-		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B1, IntersectPoint))
+		if (PB.Point != EPCGTriPoint::E_North && PB.Point != EPCGTriPoint::E_NorthWest && PB.Point != EPCGTriPoint::E_NorthEast)
 		{
-			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_North, TmpVerts, HalfEdgeVerts);
-			return;
+			if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B1, IntersectPoint))
+			{
+				AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_North, TmpVerts, HalfEdgeVerts);
+				return;
+			}
 		}
-		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B2, IntersectPoint))
+		if (PB.Point != EPCGTriPoint::E_East && PB.Point != EPCGTriPoint::E_SouthEast && PB.Point != EPCGTriPoint::E_NorthEast)
 		{
-			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_East, TmpVerts, HalfEdgeVerts);
-			return;
+			if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Max, 0.f), B2, IntersectPoint))
+			{
+				AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_East, TmpVerts, HalfEdgeVerts);
+				return;
+			}
 		}
-		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B2, IntersectPoint))
+		if (PB.Point != EPCGTriPoint::E_South && PB.Point != EPCGTriPoint::E_SouthEast && PB.Point != EPCGTriPoint::E_SouthWest)
 		{
-			AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_South, TmpVerts, HalfEdgeVerts);
-			return;
+			if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B2, IntersectPoint))
+			{
+				AddHalfEdgeTempVert(FVector2D(IntersectPoint), Edge, EdgeIndex, EPCGTriPoint::E_South, TmpVerts, HalfEdgeVerts);
+				return;
+			}
 		}
 
 	}
 
 	// Will either be 2 intersections and pick the closest, or none at all.
-	if (PA.Value == EPCGTriPoint::E_External && PB.Value == EPCGTriPoint::E_External)
+	if (PA.Point == EPCGTriPoint::E_External && PB.Point == EPCGTriPoint::E_External)
 	{
 		FVector IntersectPoint1;
 		FVector IntersectPoint2;
 		EPCGTriPoint IP1Type = EPCGTriPoint::E_External;
 		EPCGTriPoint IP2Type = EPCGTriPoint::E_External;
 
-		FVector& CurrentPoint = IntersectPoint1;
+		FVector CurrentPoint;
 
 		bool bFoundP1 = false;
 		bool bFoundP2 = false;
@@ -1204,7 +1646,7 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 		if (FMath::SegmentIntersection2D(FVector(VA, 0.f), FVector(VB, 0.f), FVector(Bounds.Min, 0.f), B1, CurrentPoint))
 		{
 			bFoundP1 = true;
-			CurrentPoint = IntersectPoint2;
+			IntersectPoint1 = CurrentPoint;
 			IP1Type = EPCGTriPoint::E_West;
 		}
 
@@ -1214,11 +1656,12 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 			if (bFoundP1)
 			{
 				bFoundP2 = true;
+				IntersectPoint2 = CurrentPoint;
 				IP2Type = EPCGTriPoint::E_North;
 			}
 			else {
 				bFoundP1 = true;
-				CurrentPoint = IntersectPoint2;
+				IntersectPoint1 = CurrentPoint;
 				IP1Type = EPCGTriPoint::E_North;
 			}
 
@@ -1229,11 +1672,12 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 			if (bFoundP1)
 			{
 				bFoundP2 = true;
+				IntersectPoint2 = CurrentPoint;
 				IP2Type = EPCGTriPoint::E_East;
 			}
 			else {
 				bFoundP1 = true;
-				CurrentPoint = IntersectPoint2;
+				IntersectPoint1 = CurrentPoint;
 				IP1Type = EPCGTriPoint::E_East;
 			}
 		}
@@ -1243,11 +1687,12 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 			if (bFoundP1)
 			{
 				bFoundP2 = true;
+				IntersectPoint2 = CurrentPoint;
 				IP2Type = EPCGTriPoint::E_South;
 			}
 			else {
 				bFoundP1 = true;
-				CurrentPoint = IntersectPoint2;
+				IntersectPoint1 = CurrentPoint;
 				IP1Type = EPCGTriPoint::E_South;
 			}
 		}
@@ -1260,12 +1705,14 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 			float DistAtoP1Sq = FVector2D::DistSquared(VA, P12D);
 			float DistAtoP2Sq = FVector2D::DistSquared(VA, P22D);
 
+			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Double connected edge index %d types %s and %s, selected %s"), EdgeIndex, *TriPointToString(IP1Type), *TriPointToString(IP2Type), DistAtoP1Sq < DistAtoP2Sq ? *TriPointToString(IP1Type) : *TriPointToString(IP2Type));
+
 			if (DistAtoP1Sq > DistAtoP2Sq)
 			{
 				AddHalfEdgeTempVert(P22D, Edge, EdgeIndex, IP2Type, TmpVerts, HalfEdgeVerts);
 			}
 			else {
-				AddHalfEdgeTempVert(P12D, Edge, EdgeIndex, IP2Type, TmpVerts, HalfEdgeVerts);
+				AddHalfEdgeTempVert(P12D, Edge, EdgeIndex, IP1Type, TmpVerts, HalfEdgeVerts);
 			}
 		}
 	}
@@ -1273,10 +1720,13 @@ void AManualDetourNavMesh::IntersectingEdgeCheck(FPCGTriPoint& Edge, int32 EdgeI
 
 void AManualDetourNavMesh::AddHalfEdgeTempVert(FVector2D Location, FPCGTriPoint& Point, int32 EdgeIndex, EPCGTriPoint Type, TArray<FVector2D> &Verts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts)
 {
-	Point.Key = Verts.Num();
-	Point.Value = Type;
+	Point.Index = Verts.Num();
+	Point.Point = Type;
 	Verts.Add(Location);
-	HalfEdgeVerts.Add(EdgeIndex, Point);
+	if (EdgeIndex >= 0)
+	{
+		HalfEdgeVerts.Add(EdgeIndex, Point);
+	}
 }
 
 bool AManualDetourNavMesh::IsInternalSegment(const FPCGTriPoint& A, const FPCGTriPoint& B)
@@ -1284,26 +1734,26 @@ bool AManualDetourNavMesh::IsInternalSegment(const FPCGTriPoint& A, const FPCGTr
 	/*
 		Check each boundary
 	*/
-	if ((A.Value == EPCGTriPoint::E_East || A.Value == EPCGTriPoint::E_NorthEast || A.Value == EPCGTriPoint::E_SouthEast) &&
-		(B.Value == EPCGTriPoint::E_East || B.Value == EPCGTriPoint::E_NorthEast || B.Value == EPCGTriPoint::E_SouthEast))
+	if ((A.Point == EPCGTriPoint::E_East || A.Point == EPCGTriPoint::E_NorthEast || A.Point == EPCGTriPoint::E_SouthEast) &&
+		(B.Point == EPCGTriPoint::E_East || B.Point == EPCGTriPoint::E_NorthEast || B.Point == EPCGTriPoint::E_SouthEast))
 	{
 		return true;
 	}
 
-	if ((A.Value == EPCGTriPoint::E_West || A.Value == EPCGTriPoint::E_NorthWest || A.Value == EPCGTriPoint::E_SouthWest) &&
-		(B.Value == EPCGTriPoint::E_West || B.Value == EPCGTriPoint::E_NorthWest || B.Value == EPCGTriPoint::E_SouthWest))
+	if ((A.Point == EPCGTriPoint::E_West || A.Point == EPCGTriPoint::E_NorthWest || A.Point == EPCGTriPoint::E_SouthWest) &&
+		(B.Point == EPCGTriPoint::E_West || B.Point == EPCGTriPoint::E_NorthWest || B.Point == EPCGTriPoint::E_SouthWest))
 	{
 		return true;
 	}
 
-	if ((A.Value == EPCGTriPoint::E_South || A.Value == EPCGTriPoint::E_SouthEast || A.Value == EPCGTriPoint::E_SouthWest) &&
-		(B.Value == EPCGTriPoint::E_South || B.Value == EPCGTriPoint::E_SouthEast || B.Value == EPCGTriPoint::E_SouthWest))
+	if ((A.Point == EPCGTriPoint::E_South || A.Point == EPCGTriPoint::E_SouthEast || A.Point == EPCGTriPoint::E_SouthWest) &&
+		(B.Point == EPCGTriPoint::E_South || B.Point == EPCGTriPoint::E_SouthEast || B.Point == EPCGTriPoint::E_SouthWest))
 	{
 		return true;
 	}
 
-	if ((A.Value == EPCGTriPoint::E_North || A.Value == EPCGTriPoint::E_NorthEast || A.Value == EPCGTriPoint::E_NorthWest) &&
-		(B.Value == EPCGTriPoint::E_South || B.Value == EPCGTriPoint::E_NorthEast || B.Value == EPCGTriPoint::E_NorthWest))
+	if ((A.Point == EPCGTriPoint::E_North || A.Point == EPCGTriPoint::E_NorthEast || A.Point == EPCGTriPoint::E_NorthWest) &&
+		(B.Point == EPCGTriPoint::E_North || B.Point == EPCGTriPoint::E_NorthEast || B.Point == EPCGTriPoint::E_NorthWest))
 	{
 		return true;
 	}
@@ -1337,10 +1787,10 @@ bool AManualDetourNavMesh::TriangleRelevanceCheck(const FVector2D& A, const FVec
 
 FString FPCGTriPoint::ToString() const
 {
-	FString Ret = FString::FromInt(Key);
+	FString Ret = FString::FromInt(Index);
 	Ret.AppendChar(' ');
 
-	switch (Value)
+	switch (Point)
 	{
 	case EPCGTriPoint::E_External:
 		Ret.Append("External");
@@ -1418,27 +1868,184 @@ int32 AManualDetourNavMesh::PointCount(FPCGTriPoint& EdgeAB, FPCGTriPoint& EdgeB
 
 int32 AManualDetourNavMesh::PointAccum(FPCGTriPoint& Point, FPCGTriCorners& Corners)
 {
-	if (Point.Key >= 0)
+	if (Point.Index >= 0)
 	{
-		if (Point.Value == EPCGTriPoint::E_NorthEast)
+		if (Point.Point == EPCGTriPoint::E_NorthEast)
 			Corners.NE = false;
-		if (Point.Value == EPCGTriPoint::E_SouthEast)
+		if (Point.Point == EPCGTriPoint::E_SouthEast)
 			Corners.SE = false;
-		if (Point.Value == EPCGTriPoint::E_SouthWest)
+		if (Point.Point == EPCGTriPoint::E_SouthWest)
 			Corners.SW = false;
-		if (Point.Value == EPCGTriPoint::E_NorthWest)
+		if (Point.Point == EPCGTriPoint::E_NorthWest)
 			Corners.NW = false;
 		return 1;
 	}
 	return 0;
 }
 
-void AManualDetourNavMesh::LogTriPoly(int32 Index, FPCGTriPoint &EdgeAB, FPCGTriPoint &EdgeBA,FPCGTriPoint &EdgeBC,FPCGTriPoint &EdgeCB,FPCGTriPoint &EdgeCA,FPCGTriPoint &EdgeAC, FPCGTriPoint &A, FPCGTriPoint &B, FPCGTriPoint &C, FPCGTriCorners& Corners)
+FString AManualDetourNavMesh::TriPointToString(EPCGTriPoint TriPoint) const
+{
+
+	switch (TriPoint)
+	{
+	case EPCGTriPoint::E_External:
+		return FString("External");
+	case EPCGTriPoint::E_Internal:
+		return FString("Internal");
+	case EPCGTriPoint::E_NorthWest:
+		return FString("NorthWest");
+	case EPCGTriPoint::E_North:
+		return FString("North");
+	case EPCGTriPoint::E_NorthEast:
+		return FString("NorthEast");
+	case EPCGTriPoint::E_East:
+		return FString("East");
+	case EPCGTriPoint::E_SouthEast:
+		return FString("SouthEast");
+	case EPCGTriPoint::E_South:
+		return FString("South");
+	case EPCGTriPoint::E_SouthWest:
+		return FString("SouthWest");
+	case EPCGTriPoint::E_West:
+		return FString("West");
+	}
+	return FString();
+}
+
+FString AManualDetourNavMesh::TriMemberToString(EPCGTriMember TriMember) const
+{
+	switch (TriMember)
+	{
+	case EPCGTriMember::E_A:
+		return FString("A");
+	case EPCGTriMember::E_B:
+		return FString("B");
+	case EPCGTriMember::E_C:
+		return FString("C");
+	case EPCGTriMember::E_AB:
+		return FString("AB");
+	case EPCGTriMember::E_BA:
+		return FString("BA");
+	case EPCGTriMember::E_BC:
+		return FString("BC");
+	case EPCGTriMember::E_CB:
+		return FString("CB");
+	case EPCGTriMember::E_CA:
+		return FString("CA");
+	case EPCGTriMember::E_AC:
+		return FString("AC");
+	}
+	return FString();
+}
+
+void AManualDetourNavMesh::LogPlacedPoly(int32 Index, TArray<unsigned short>& Polys)
+{
+	int32 StartIndex = Index * 6 * 2;
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Placed Poly: %hu %hu %hu %hu %hu %hu | %hu %hu %hu %hu %hu %hu"),
+		Polys[StartIndex], Polys[StartIndex + 1], Polys[StartIndex + 2], Polys[StartIndex + 3], Polys[StartIndex + 4], Polys[StartIndex + 5],
+		Polys[StartIndex + 6], Polys[StartIndex + 7], Polys[StartIndex + 8], Polys[StartIndex + 9], Polys[StartIndex + 10], Polys[StartIndex + 11]);
+		
+}
+
+void AManualDetourNavMesh::LogTriPoly(int32 Index, FPCGTriPoint &EdgeAB, FPCGTriPoint &EdgeBA,FPCGTriPoint &EdgeBC,FPCGTriPoint &EdgeCB,FPCGTriPoint &EdgeCA,FPCGTriPoint &EdgeAC,
+	FPCGTriPoint &A, FPCGTriPoint &B, FPCGTriPoint &C, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation &Triangulation)
 {
 	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Processing triangle %d, PointCount: %d"), Index, PointCount(EdgeAB, EdgeBA, EdgeBC, EdgeCB, EdgeCA, EdgeAC, A, B, C, Corners));
-	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Point A : %s :: Point B : %s :: Point C %s"), *A.ToString(), *B.ToString(), *C.ToString());
-	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge AB : %s :: Edge BA : %s"), *EdgeAB.ToString(), *EdgeBA.ToString());
-	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge BC : %s :: Edge CB : %s"), *EdgeBC.ToString(), *EdgeCB.ToString());
-	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge CA : %s :: Edge AC : %s"), *EdgeCA.ToString(), *EdgeAC.ToString());
-	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Corners: %s"), *CornerString(NE, SE, SW, NW));
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Point A (%d) : %s :: Point B (%d) : %s :: Point C (%d) %s"), Triangulation.Triangles[3*Index], *A.ToString(),Triangulation.Triangles[3*Index+1],*B.ToString(), Triangulation.Triangles[3*Index+2], *C.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge AB (%d) : %s :: Edge BA (%d) : %s"), GetHalfEdge(Index, EPCGTriMember::E_AB, Triangulation), *EdgeAB.ToString(), GetHalfEdge(Index, EPCGTriMember::E_BA, Triangulation), *EdgeBA.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge BC (%d) : %s :: Edge CB (%d) : %s"), GetHalfEdge(Index, EPCGTriMember::E_BC, Triangulation), *EdgeBC.ToString(), GetHalfEdge(Index, EPCGTriMember::E_CB, Triangulation), *EdgeCB.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Edge CA (%d) : %s :: Edge AC (%d) : %s"), GetHalfEdge(Index, EPCGTriMember::E_CA, Triangulation), *EdgeCA.ToString(), GetHalfEdge(Index, EPCGTriMember::E_AC, Triangulation), *EdgeAC.ToString());
+	UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("Corners: %s"), *CornerString(Corners));
+}
+
+bool AManualDetourNavMesh::IsBorder(unsigned short Adjacency)
+{
+	if (Adjacency == 0x8000 ||
+		Adjacency == 0x8001 ||
+		Adjacency == 0x8002 ||
+		Adjacency == 0x8003 ||
+		Adjacency == RC_MESH_NULL_IDX)
+	{
+		return true;
+	}
+	return false;
+}
+
+int32 AManualDetourNavMesh::GetHalfEdge(int32 Index, EPCGTriMember Member, const FPCGDelaunayTriangulation& Triangulation)
+{
+	switch (Member)
+	{
+	case EPCGTriMember::E_AB:
+		return Index * 3;
+	case EPCGTriMember::E_BC:
+		return Index * 3 + 1;
+	case EPCGTriMember::E_CA:
+		return Index * 3 + 2;
+
+	case EPCGTriMember::E_BA:
+		if (Triangulation.HalfEdges[Index * 3] < 0)
+		{
+			return -1;
+		}
+		else {
+			return Triangulation.HalfEdges[Index * 3];
+		}
+
+	case EPCGTriMember::E_CB:
+		if (Triangulation.HalfEdges[Index * 3 + 1] < 0)
+		{
+			return -1;
+		}
+		else {
+			return Triangulation.HalfEdges[Index * 3 + 1];
+		}
+
+	case EPCGTriMember::E_AC:
+		if (Triangulation.HalfEdges[Index * 3 + 2] < 0)
+		{
+			return -1;
+		}
+		else {
+			return Triangulation.HalfEdges[Index * 3 + 2];
+		}
+	}
+	return -1;
+}
+
+bool AManualDetourNavMesh::ReverseEdgeCheck(EPCGTriMember E1, EPCGTriMember E2)
+{
+	/*
+		Check whether the edge from E1 to E2 should be allowed to place corners. This helps to prevent the case where an edge
+		intersects two different boundaries, and the point placement thinks it's just placing the same edge in both directiions,
+		with both attempting to pull in the corner. Instead we only want the reverse edge to pull in the corner as the forward edge
+		will already be in the correct direction
+	*/
+	if ((E1 == EPCGTriMember::E_AB && E2 == EPCGTriMember::E_BA) ||
+	    (E1 == EPCGTriMember::E_BC && E2 == EPCGTriMember::E_CB) ||
+	    (E1 == EPCGTriMember::E_CA && E2 == EPCGTriMember::E_AC))
+	{
+		return false;
+	}
+	return true;
+}
+
+void AManualDetourNavMesh::ReversePolyVertOrder(int32 PolyIndex, int32 PolyVertCount, TArray<unsigned short>& TmpPolys)
+{
+	int32 StartVertIndex = PolyIndex * 12;
+	int32 LastVertIndex = PolyIndex * 12 + PolyVertCount - 1;
+	int32 PolyVertSwaps = (PolyVertCount) / 2;
+
+	int32 StartEdgeIndex = StartVertIndex + 6;
+	int32 LastEdgeIndex = LastVertIndex + 6;
+	int32 PolyEdgeSwaps = (PolyVertCount - 1) / 2;
+
+	for (int32 i = 0; i < PolyVertSwaps; i++)
+	{
+		Swap(TmpPolys[StartVertIndex + i], TmpPolys[LastVertIndex - i]);
+
+		if (i < PolyEdgeSwaps)
+		{
+			Swap(TmpPolys[StartEdgeIndex + i], TmpPolys[LastEdgeIndex - 1 - i]);
+		}
+	}
 }

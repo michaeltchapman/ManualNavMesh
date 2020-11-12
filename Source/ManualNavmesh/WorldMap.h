@@ -35,9 +35,14 @@ public:
 	FVector GetMax() const;
 	bool IsGrid() const;
 
+	const TSet<int32>& GetImpassableRegions() const;
+
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	TSet<int32> ImpassableRegions;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
 	int32 RandomPointCount;

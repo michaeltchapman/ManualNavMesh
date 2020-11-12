@@ -51,6 +51,28 @@ enum class EPCGTriPoint : uint8
 	E_West		UMETA(DisplayName = "West")
 };
 
+// Each part of the triangle that can result in a point
+// - each point
+// - each direction of each edge 
+// - each corner of the bounds
+UENUM(BlueprintType)
+enum class EPCGTriMember : uint8
+{
+	E_A  UMETA(DisplayName = "A"),
+	E_AB  UMETA(DisplayName = "AB"),
+	E_BA  UMETA(DisplayName = "BA"),
+	E_B  UMETA(DisplayName = "B"),
+	E_BC  UMETA(DisplayName = "BC"),
+	E_CB  UMETA(DisplayName = "CB"),
+	E_C  UMETA(DisplayName = "C"),
+	E_CA  UMETA(DisplayName = "CA"),
+	E_AC  UMETA(DisplayName = "AC"),
+	E_NorthWest UMETA(DisplayName = "NorthWest"),
+	E_NorthEast UMETA(DisplayName = "NorthEast"),
+	E_SouthEast UMETA(DisplayName = "SouthEast"),
+	E_SouthWest UMETA(DisplayName = "SouthWest"),
+};
+
 
 USTRUCT(BlueprintType)
 struct MANUALNAVMESH_API FPCGTriCorners
@@ -69,22 +91,43 @@ public:
 };
 
 USTRUCT(BlueprintType)
+struct MANUALNAVMESH_API FPCGTriPointMapping
+{
+	GENERATED_BODY()
+public:
+	int32 ParentPoint;
+	int32 ParentEdge;
+
+	FPCGTriPointMapping()
+		: ParentPoint(-1)
+		, ParentEdge(-1)
+	{
+	}
+
+	FPCGTriPointMapping(int32 inPoint, int32 inEdge)
+		: ParentPoint(inPoint)
+		, ParentEdge(inEdge)
+	{
+	}
+};
+
+USTRUCT(BlueprintType)
 struct MANUALNAVMESH_API FPCGTriPoint
 {
 	GENERATED_BODY()
 public:
-	int32 Key;
-	EPCGTriPoint Value;
+	int32 Index;
+	EPCGTriPoint Point;
 
 	FPCGTriPoint()
-		: Key(-1)
-		, Value(EPCGTriPoint::E_External)
+		: Index(-1)
+		, Point(EPCGTriPoint::E_External)
 	{
 	}
 
 	FPCGTriPoint(int32 inKey, EPCGTriPoint inValue)
-		: Key(inKey)
-		, Value(inValue)
+		: Index(inKey)
+		, Point(inValue)
 	{
 	}
 
@@ -131,25 +174,48 @@ protected:
 	static FColor GetEdgeDebugColor(unsigned short EdgeCode);
 	static FVector GetPolyCentre(dtNavMeshCreateParams& TileParams, unsigned short Index);
 
+	bool IsBorder(unsigned short Adjacency);
 
 	FString CornerString(FPCGTriCorners& Corners);
 
 	// Create the triangle TriIndex
 	int32 ProcessTriangle(const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation,
-		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
 
 	// Add relevant point to TmpVerts and mapping to InternalVerts, ignore points outside bounds
 	FPCGTriPoint ProcessPoint(int32 PointIndex, const FBox2D& Bounds, const TArray<FVector2D>& Coords, TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& InternalVerts);
 
-	typedef TTuple<FPCGTriPoint*, bool> TriPointType;
+	//typedef TTuple<FPCGTriPoint*, bool> TriPointType;
+	//typedef TTuple<FPCGTriPoint*, FPCGTriPointMapping> TriPointType;
+	typedef TTuple<FPCGTriPoint*, EPCGTriMember> TriPointType;
 	typedef TArray<TriPointType, TInlineAllocator<6>> TriPointArray;
 	//typedef TArray<TTuple<FPCGTriPoint*, bool>, TInlineAllocator<6>> TriPointArray;
 
-	bool PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
-		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation);
+	void PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const FBox2D &Bounds);
 
-	bool PlaceCorners(TriPointType& CurrentPoint, TriPointType& PreviousPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
-		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation);
+	bool PlaceCorners(int32 &PlaceIndex, TriPointType& CurrentPoint, TriPointType& NextPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const FBox2D &Bounds);
+
+	unsigned short GetAdjacentPoly(const FPCGDelaunayTriangulation& Triangulation, int32 TriIndex, TriPointType& CurrentPoint, TriPointType& NextPoint);
+	FVector2D CornerEdgeToVert(EPCGTriPoint CornerEdge, const FBox2D& Bounds);
+	EPCGTriMember GetConnectingEdge(EPCGTriMember P1, EPCGTriMember P2);
+	unsigned short ConnectingEdgeToOffset(EPCGTriMember Edge);
+	bool ReverseEdgeCheck(EPCGTriMember E1, EPCGTriMember E2);
+
+	EPCGTriPoint GetNextEdge(EPCGTriPoint CurrentEdge,EPCGTriPoint StartEdge, EPCGTriPoint EndEdge, FPCGTriCorners &Corners);
+	EPCGTriPoint GetNextCornerEdge(EPCGTriPoint Corner, EPCGTriPoint Destination, FPCGTriCorners &Corners);
+	int32 CornerDistToEdge(EPCGTriPoint Corner, EPCGTriPoint Destination);
+
+	FString TriPointToString(EPCGTriPoint TriPoint) const;
+	FString TriMemberToString(EPCGTriMember TriMember) const;
+
+	void ReversePolyVertOrder(int32 PolyIndex, int32 PolyVertCount, TArray<unsigned short>& TmpPolys);
+
+	unsigned short GetEdgePortal(EPCGTriPoint Edge);
+	EPCGTriPoint GetCommonEdge(EPCGTriPoint Edge1, EPCGTriPoint Edge2);
+	bool IsEdge(EPCGTriMember Member);
+	bool IsPoint(EPCGTriMember Member);
 
 	void ProcessEdge(FPCGTriPoint &Edge1, FPCGTriPoint &Edge2, int32 EdgeIndex, const FPCGTriPoint &A, const FPCGTriPoint &B, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
 		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
@@ -223,7 +289,12 @@ private:
 	void AddHalfEdgeTempVert(FVector2D Location, FPCGTriPoint& Point, int32 EdgeIndex, EPCGTriPoint Type, TArray<FVector2D> &Verts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
 	bool IsInternalSegment(const FPCGTriPoint& A, const FPCGTriPoint& B);
 
-	void LogTriPoly(int32 Index, FPCGTriPoint &EdgeAB, FPCGTriPoint &EdgeBA,FPCGTriPoint &EdgeBC,FPCGTriPoint &EdgeCB,FPCGTriPoint &EdgeCA,FPCGTriPoint &EdgeAC, FPCGTriPoint &A, FPCGTriPoint &B, FPCGTriPoint &C, FPCGTriCorners& Corners);
+	int32 GetHalfEdge(int32 Index, EPCGTriMember Member, const FPCGDelaunayTriangulation &Triangulation);
+
+	void LogTriPoly(int32 Index, FPCGTriPoint &EdgeAB, FPCGTriPoint &EdgeBA,FPCGTriPoint &EdgeBC,FPCGTriPoint &EdgeCB,FPCGTriPoint &EdgeCA,FPCGTriPoint &EdgeAC,
+		FPCGTriPoint &A, FPCGTriPoint &B, FPCGTriPoint &C, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation &Triangulation);
+	void LogPlacedPoly(int32 Index, TArray<unsigned short>& Polys);
+
 	int32 PointCount(FPCGTriPoint& EdgeAB, FPCGTriPoint& EdgeBA, FPCGTriPoint& EdgeBC, FPCGTriPoint& EdgeCB, FPCGTriPoint& EdgeCA, FPCGTriPoint& EdgeAC, FPCGTriPoint& A, FPCGTriPoint& B, FPCGTriPoint& C, FPCGTriCorners& Corners);
 	int32 PointAccum(FPCGTriPoint& EdgeAB, FPCGTriCorners& Corners);
 };

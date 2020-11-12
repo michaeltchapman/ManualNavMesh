@@ -88,7 +88,7 @@ void AWorldMap::BuildMesh()
 	}
 	else {
 		TArray<FVector2D> Points;
-		URegionDistribution::GenerateBoundedRandomPoints(RandomPointCount, FVector2D(Min), FVector2D(Max), Points);
+		URegionDistribution::GenerateBoundedRandomPoints(RandomPointCount, FVector2D(Min), FVector2D(Max), Points, Seed);
 		//URegionDistribution::GenerateTriangulation(Points, Coords, Triangles, HalfEdges);
 
 		URegionDistribution::GenerateTriangulation(Points, Triangulation);
@@ -127,4 +127,9 @@ FVector AWorldMap::GetMax() const
 bool AWorldMap::IsGrid() const
 {
 	return bGrid;
+}
+
+const TSet<int32>& AWorldMap::GetImpassableRegions() const
+{
+	return ImpassableRegions;
 }
