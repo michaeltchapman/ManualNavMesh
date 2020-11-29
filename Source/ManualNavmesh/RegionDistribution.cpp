@@ -3,6 +3,320 @@
 #include "DrawDebugHelpers.h"
 #include "Delaunator.h"
 
+bool FPCGDelaunayTriangulation::ValidTriangle(int32 Triangle) const
+{
+	return
+		(Triangles[3 * Triangle] >= 0 &&
+			Triangles[3 * Triangle + 1] >= 0 &&
+			Triangles[3 * Triangle + 2] >= 0);
+}
+
+void FPCGDelaunayTriangulation::RemoveTriangle(int32 Triangle)
+{
+	Triangles[3*Triangle] = 0;
+	Triangles[3*Triangle + 1] = 0;
+	Triangles[3*Triangle + 2] = 0;
+	HalfEdges[3*Triangle] = -1;
+	HalfEdges[3*Triangle + 1] = -1;
+	HalfEdges[3*Triangle + 2] = -1;
+}
+
+void FPCGDelaunayTriangulation::DeepRemoveTriangle(int32 Triangle)
+{
+	ReplaceTriangle(Triangle, -1, -1, -1, -1, -1, -1);
+}
+
+void FPCGDelaunayTriangulation::ReplaceTriangle(int32 Triangle, int32 P1, int32 P2, int32 P3, int32 E1, int32 E2, int32 E3)
+{
+	Triangles[3 * Triangle] = P1;
+	Triangles[3 * Triangle + 1] = P2;
+	Triangles[3 * Triangle + 2] = P3;
+
+	// Remove reciprocal edges
+	if (HalfEdges[3 * Triangle] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * Triangle]] = -1;
+	}
+	if (HalfEdges[3 * Triangle + 1] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * Triangle + 1]] = -1;
+	}
+	if (HalfEdges[3 * Triangle + 2] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * Triangle + 2]] = -1;
+	}
+
+	// Create new edges
+	if (E1 < 0)
+	{
+		HalfEdges[3 * Triangle] = -1;
+	}
+	else
+	{
+		HalfEdges[3 * Triangle] = E1;
+		HalfEdges[E1] = 3 * Triangle;
+	}
+
+	if (E2 < 0)
+	{
+		HalfEdges[3 * Triangle + 1] = -1;
+	}
+	else
+	{
+		HalfEdges[3 * Triangle + 1] = E2;
+		HalfEdges[E2] = 3 * Triangle + 1;
+	}
+
+	if (E3 < 0)
+	{
+		HalfEdges[3 * Triangle + 2] = -1;
+	}
+	else
+	{
+		HalfEdges[3 * Triangle + 2] = E3;
+		HalfEdges[E3] = 3 * Triangle + 2;
+	}
+}
+
+TriangleNeighbours FPCGDelaunayTriangulation::GetTriangleNeighbours(int32 Triangle)
+{
+	TriangleNeighbours Ret;
+	if (Triangle >= 0)
+	{
+		for (int32 i = 0; i < 3; i++)
+		{
+			int32 Edge = TriangleOfEdge(HalfEdges[3 * Triangle + i]);
+			if (Edge > 0)
+			{
+				Ret.Add(Edge);
+			}
+		}
+	}
+	return Ret;
+}
+
+bool FPCGDelaunayTriangulation::IsInCounterClockwiseDirectionFrom(FVector2D A, FVector2D B)
+{
+	return A.X * B.Y - A.Y * B.X <= 0.f;
+}
+
+bool FPCGDelaunayTriangulation::IsInClockwiseDirectionFrom(FVector2D A, FVector2D B)
+{
+	return A.X * B.Y - A.Y * B.X >= 0.f;
+}
+
+bool FPCGDelaunayTriangulation::PointLiesOnEdge(int32 Edge, FVector2D Point)
+{
+	if (Edge < 1)
+	{
+		return false;
+	}
+
+	if (Coords[Triangles[Edge]] == Point || Coords[Triangles[NextHalfedge(Edge)]] == Point)
+	{
+		return true;
+	}
+	return false;
+}
+
+int32 FPCGDelaunayTriangulation::TestPointInTriangle(int32 Triangle, FVector2D Point) const
+{
+	if (Point == Coords[Triangles[Triangle * 3]])
+	{
+		return Triangles[Triangle*3];
+	}
+	if (Point == Coords[Triangles[Triangle * 3+1]])
+	{
+		return Triangles[Triangle*3+1];
+	}
+	if (Point == Coords[Triangles[Triangle * 3+2]])
+	{
+		return Triangles[Triangle*3+2];
+	}
+	return -1;
+}
+
+bool FPCGDelaunayTriangulation::IsInTriangle(FVector2D Point, int32 Triangle, bool bInclusive) const
+{
+	if (Triangles[3 * Triangle] < 0)
+		return false;
+
+	const FVector2D& A = Coords[Triangles[3 * Triangle]];
+	const FVector2D& B = Coords[Triangles[3 * Triangle+1]];
+	const FVector2D& C = Coords[Triangles[3 * Triangle+2]];
+	float u, v, w;
+
+	if (Point == A || Point == B || Point == C)
+	{
+		return bInclusive;
+	}
+
+	if (A == B && B == C)
+	{
+
+		UE_LOG(LogManualNavMesh, Warning, TEXT("Tried to find barycentric coods in triangle with area 0"));
+		return false;
+	}
+
+	FVector2D V0 = B - A;
+	FVector2D V1 = C - A;
+	FVector2D V2 = Point - A;
+
+	float den = 1 / (V0.X * V1.Y - V1.X * V0.Y);
+    v = (V2.X * V1.Y - V1.X * V2.Y) * den;
+    w = (V0.X * V2.Y - V2.X * V0.Y) * den;
+    u = 1.0f - v - w;
+
+	return !(u < 0.f || u > 1.f || v < 0.f || v > 1.f || w < 0.f || w > 1.f);
+}
+
+FVector2D FPCGDelaunayTriangulation::ClosestPointOnEdge(FVector2D Point, int32 Edge)
+{
+	return FMath::ClosestPointOnSegment2D(Point, Coords[HalfEdgeOrigin(Edge)], Coords[HalfEdgeDest(Edge)]);
+}
+
+float FPCGDelaunayTriangulation::DistanceFromEdge(FVector2D Point, int32 Edge)
+{
+	return FVector2D::Distance(FMath::ClosestPointOnSegment2D(Point, Coords[HalfEdgeOrigin(Edge)], Coords[HalfEdgeDest(Edge)]), Point);
+}
+
+bool FPCGDelaunayTriangulation::PointLiesOnEdge(int32 Edge, int32 Point)
+{
+	if (Edge < 1)
+	{
+		return false;
+	}
+
+	if (Triangles[Edge] == Point || Triangles[NextHalfedge(Edge)] == Point)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+int32 FPCGDelaunayTriangulation::GetCommonEdge(int32 Triangle1, int32 Triangle2)
+{
+	if (Triangle1 < 0)
+	{
+		return -1;
+	}
+
+	if (TriangleOfEdge(HalfEdges[3 * Triangle1]) == Triangle2)
+	{
+		return 3 * Triangle1;
+	}
+	if (TriangleOfEdge(HalfEdges[3 * Triangle1 + 1]) == Triangle2)
+	{
+		return 3 * Triangle1 + 1;
+	}
+	if (TriangleOfEdge(HalfEdges[3 * Triangle1 + 2]) == Triangle2)
+	{
+		return 3 * Triangle1 + 2;
+	}
+	return -1;
+}
+
+bool FPCGDelaunayTriangulation::HasEdge(int32 Edge, int32 Triangle2)
+{
+	if (Triangle2 < 0 || Edge < 0)
+	{
+		return false;
+	}
+
+	if (TriangleOfEdge(Edge) == Triangle2)
+	{
+		return true;
+	}
+
+	if (HalfEdges[3 * Triangle2] == Edge || HalfEdges[3 * Triangle2 + 1] == Edge || HalfEdges[3 * Triangle2 + 2] == Edge)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+int32 FPCGDelaunayTriangulation::GetLastValidTriangle(int32 CurrentLast)
+{
+	int32 Start = CurrentLast >= 0 ? CurrentLast : (Triangles.Num() / 3) - 1;
+	for (int32 i = Start; i >= 0; i--)
+	{
+		if (Triangles[3 * i] >= 0)
+		{
+			return i;
+		}
+	}
+	// There aren't any valid triangles
+	return -1;
+}
+
+void FPCGDelaunayTriangulation::SwapTriangles(int32 A, int32 B)
+{
+	Swap<int32>(Triangles[3 * A], Triangles[3 * B]);
+	Swap<int32>(Triangles[3 * A + 1], Triangles[3 * B+1]);
+	Swap<int32>(Triangles[3 * A + 2], Triangles[3 * B+2]);
+
+	// Edges can be swapped, but their reciprocals need to be recalculated
+
+	if (HalfEdges[3 * A] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * A]] = 3 * B;
+	}
+	if (HalfEdges[3 * A+1] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * A+1]] = 3 * B+1;
+	}
+	if (HalfEdges[3 * A+2] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * A+2]] = 3 * B+2;
+	}
+
+	if (HalfEdges[3 * B] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * B]] = 3 * A;
+	}
+	if (HalfEdges[3 * B+1] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * B+1]] = 3 * A+1;
+	}
+	if (HalfEdges[3 * B+2] >= 0)
+	{
+		HalfEdges[HalfEdges[3 * B+2]] = 3 * A+2;
+	}
+
+	Swap<int32>(HalfEdges[3 * A], HalfEdges[3 * B]);
+	Swap<int32>(HalfEdges[3 * A + 1], HalfEdges[3 * B+1]);
+	Swap<int32>(HalfEdges[3 * A + 2], HalfEdges[3 * B+2]);
+}
+
+void FPCGDelaunayTriangulation::CleanupRemovals()
+{
+	// Go through the triangulation and find the triangles we nuked by setting the points to -1,
+	// then work our way from the *back* of the triangulation and move the last valid triangle into
+	// the place with all the -1s.
+
+	// This doesn't remove unused verts
+
+	int32 CurrentValidEnd = GetLastValidTriangle();
+	for (int32 i = 0; i < Triangles.Num() / 3; i++)
+	{
+		if (!ValidTriangle(i))
+		{
+			SwapTriangles(i, CurrentValidEnd);
+			CurrentValidEnd = GetLastValidTriangle(CurrentValidEnd);
+		}
+
+		if (i >= CurrentValidEnd)
+		{
+			break;
+		}
+	}
+
+	Triangles.SetNum((CurrentValidEnd + 1) * 3);
+	HalfEdges.SetNum((CurrentValidEnd + 1) * 3);
+}
+
 void URegionDistribution::GenerateBoundedRandomPoints(int32 Count, FVector2D Min, FVector2D Max, UPARAM(ref) TArray<FVector2D>& OutPoints, int32 Seed)
 {
 	FRandomStream Random = FRandomStream(Seed);
@@ -82,10 +396,10 @@ void URegionDistribution::DrawTriangle(UObject* WorldContextObject, int32 Index,
 	}
 }
 
-bool URegionDistribution::IsInTriangle(FVector2D P, const FVector2D& A, const FVector2D& B, const FVector2D& C)
+bool URegionDistribution::IsInTriangle(FVector2D P, const FVector2D& A, const FVector2D& B, const FVector2D& C, bool bInclusive)
 {
 	if (P == A || P == B || P == C)
-		return false;
+		return bInclusive;
 
 	FVector UV = GetBaryCentric2D(P, A, B, C);
 	return  (UV.X >= 0.f && UV.X <= 1.f &&

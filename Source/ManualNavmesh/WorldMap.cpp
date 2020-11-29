@@ -18,6 +18,24 @@ AWorldMap::AWorldMap()
 	Mesh->bUseComplexAsSimpleCollision;
 	Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	Mesh->SetCollisionProfileName(FName(TEXT("BlockAll")));
+	Scale = 1.f;
+	DebugHeight = 0.f;
+
+	ObstacleChunks = 4;
+	ObstacleProbability = 0.75f;
+	ObstacleOuterRatio = 0.7f;
+	ObstacleInnerRatio = 0.3f;
+	ObstacleOuterHeight = 0.3f;
+	ObstacleInnerHeight = 1.f;
+	ObstacleMaxVerts = 4;
+
+	bUseTPAStar = false;
+
+}
+
+FPCGDelaunayTriangulation& AWorldMap::GetTPATriangulation()
+{
+	return MinimumTriangulation;
 }
 
 // Called when the game starts or when spawned
@@ -49,6 +67,11 @@ void AWorldMap::MakeNoise()
 
 float AWorldMap::GetHeightAt(float X, float Y)
 {
+	if (DebugHeight != 0.f)
+	{
+		return DebugHeight;
+	}
+
 	if (Noise)
 	{
 		return (Noise->GetNoise2D(X, Y) + 1.f) * 0.5f;
@@ -66,7 +89,7 @@ void AWorldMap::BuildMesh()
 
 	MakeNoise();
 
-	float MeshHeight = Max.Z - Min.Z;
+	float MeshHeight = GetMax().Z - GetMin().Z;
 
 	if (Mesh->GetNumSections() > 0)
 	{
@@ -83,29 +106,64 @@ void AWorldMap::BuildMesh()
 	if (bGrid)
 	{
 		int32 Subdivisions = NavMesh->GetTileCount() * NavMesh->GetGridSubdivisions() + 1;
-		float Spacing = (Max.X - Min.X) / ((float)(Subdivisions - 1));
+		float Spacing = (GetMax().X - GetMin().X) / ((float)(Subdivisions - 1));
 		UKismetProceduralMeshLibrary::CreateGridMeshWelded(Subdivisions, Subdivisions, MeshTriangles, MeshVertices, MeshUVs, Spacing);
+
+		for (auto& Vert : MeshVertices)
+		{
+			Vert.Z = GetMin().Z + MeshHeight * GetHeightAt(Vert.X, Vert.Y);
+		}
 	}
 	else {
-		TArray<FVector2D> Points;
-		URegionDistribution::GenerateBoundedRandomPoints(RandomPointCount, FVector2D(Min), FVector2D(Max), Points, Seed);
-		//URegionDistribution::GenerateTriangulation(Points, Coords, Triangles, HalfEdges);
+		CoordHeights.Reset();
+		Triangulation.Reset();
 
-		URegionDistribution::GenerateTriangulation(Points, Triangulation);
+		TArray<FVector2D> Points;
+		if (bUseTPAStar)
+		{
+			// 2D Triangulation
+			GenerateObstacles(ObstacleChunks, Points, CoordHeights, true);
+			URegionDistribution::GenerateTriangulation(Points, MinimumTriangulation);
+			GenerateImpassableObstacles(MinimumTriangulation);
+
+			for (auto Tri : ImpassableRegions)
+			{
+				MinimumTriangulation.DeepRemoveTriangle(Tri);
+			}
+			ImpassableRegions.Reset();
+			MinimumTriangulation.CleanupRemovals();
+
+			// Heightmap Triangulation
+			GenerateObstacles(ObstacleChunks, Points, CoordHeights, bSetFlatObstacles);
+			URegionDistribution::GenerateTriangulation(Points, Triangulation);
+			GenerateImpassableObstacles(Triangulation);
+
+		}
+		else {
+			if (ObstacleChunks <= 0)
+			{
+				URegionDistribution::GenerateBoundedRandomPoints(RandomPointCount, FVector2D(GetMin()), FVector2D(GetMax()), Points, Seed);
+			}
+			else {
+				GenerateObstacles(ObstacleChunks, Points, CoordHeights, bSetFlatObstacles);
+			}
+
+			URegionDistribution::GenerateTriangulation(Points, Triangulation);
+			GenerateImpassableObstacles(Triangulation);
+		}
+
+		Triangulation.CleanupRemovals();
 
 		MeshTriangles = Triangulation.Triangles;
 		MeshVertices.Reserve(Triangulation.Coords.Num());
 		MeshUVs.Reserve(Triangulation.Coords.Num());
 		for (int32 i = 0; i < Triangulation.Coords.Num(); i++)
 		{
-			MeshVertices.Add(FVector(Triangulation.Coords[i], 0.f));
+			const FVector2D& V = Triangulation.Coords[i];
+			CoordHeights.Add(GetMin().Z + MeshHeight*GetHeightAt(V.X, V.Y));
+			MeshVertices.Add(FVector(Triangulation.Coords[i], CoordHeights[i]));
 			MeshUVs.Add(Triangulation.Coords[i]);
 		}
-	}
-
-	for (auto& Vert : MeshVertices)
-	{
-		Vert.Z = Min.Z + MeshHeight*GetHeightAt(Vert.X, Vert.Y);
 	}
 
 	UKismetProceduralMeshLibrary::CalculateTangentsForMesh(MeshVertices, MeshTriangles, MeshUVs, MeshNormals, MeshTangents);
@@ -116,12 +174,12 @@ void AWorldMap::BuildMesh()
 
 FVector AWorldMap::GetMin() const
 {
-	return Min;
+	return Min * Scale;
 }
 
 FVector AWorldMap::GetMax() const
 {
-	return Max;
+	return Max * Scale;
 }
 
 bool AWorldMap::IsGrid() const
@@ -132,4 +190,95 @@ bool AWorldMap::IsGrid() const
 const TSet<int32>& AWorldMap::GetImpassableRegions() const
 {
 	return ImpassableRegions;
+}
+
+void AWorldMap::GenerateObstacles(int32 Chunks, TArray<FVector2D>& Points, TArray<float>& Heights, bool inbSetFlatObstacles)
+{
+	if (Chunks == 0)
+		return;
+
+	/*
+	// Defaults
+	ObstacleChunks = 4;
+	ObstacleProbability = 0.75f;
+	ObstacleOuterRatio = 0.7f;
+	ObstacleInnerRatio = 0.3f;
+	ObstacleOuterHeight = 0.3f;
+	ObstacleInnerHeight = 1.f;
+	ObstacleMaxVerts = 4;
+	*/
+
+	FVector WorldSize = (GetMax() - GetMin());
+	FVector2D ChunkSize = FVector2D(WorldSize) / ((float)Chunks);
+	FVector2D HalfChunkSize = ChunkSize * 0.5f;
+
+	FRandomStream Random = FRandomStream(Seed);
+
+	Points.Reset();
+	Heights.Reset();
+
+	Points.Add(FVector2D(GetMin()));
+	CoordHeights.Add(GetMin().Z);
+	Points.Add(FVector2D(GetMax()));
+	CoordHeights.Add(GetMin().Z);
+	Points.Add(FVector2D(GetMin().X, GetMax().Y));
+	CoordHeights.Add(GetMin().Z);
+	Points.Add(FVector2D(GetMax().X, GetMin().Y));
+	CoordHeights.Add(GetMin().Z);
+
+	DenyVerts.Reset();
+
+	for (int32 j = 0; j < Chunks; j++)
+	{
+		for (int32 i = 0; i < Chunks; i++)
+		{
+			if (Random.GetFraction() < ObstacleProbability)
+			{
+				FVector2D ChunkMin = FVector2D(GetMin().X + ChunkSize.X * i,GetMin().Y + ChunkSize.Y * j);
+				FVector2D ChunkMax = ChunkMin + ChunkSize;
+				FVector2D ChunkCentre = ChunkMin + HalfChunkSize;
+
+				int32 VertCount = Random.RandRange(4, ObstacleMaxVerts);
+				float RotateDegrees = 360.f / ((float)VertCount);
+
+				DenyVerts.Add(Points.Num());
+				Points.Add(ChunkCentre);
+				CoordHeights.Add(GetMin().Z + WorldSize.Z*ObstacleInnerHeight);
+				for (int32 v = 0; v < VertCount; v++)
+				{
+					FVector2D Outer = FVector2D(FVector2D::Unit45Deg).GetRotated(v * RotateDegrees) * HalfChunkSize * ObstacleOuterRatio + ChunkCentre;
+					FVector2D Inner = FVector2D(FVector2D::Unit45Deg).GetRotated(v * RotateDegrees) * HalfChunkSize * ObstacleInnerRatio + ChunkCentre;
+
+					if (inbSetFlatObstacles)
+					{
+						Points.Add(Inner);
+						CoordHeights.Add(GetMin().Z + WorldSize.Z * ObstacleOuterHeight);
+					}
+					else {
+						Points.Add(Outer);
+						CoordHeights.Add(GetMin().Z);
+						Points.Add((Outer + Inner) * 0.5f);
+						CoordHeights.Add(GetMin().Z + WorldSize.Z * ObstacleOuterHeight);
+						Points.Add(Inner);
+						CoordHeights.Add(GetMin().Z + WorldSize.Z * ObstacleOuterHeight);
+					}
+				}
+			}
+		}
+	}
+}
+
+void AWorldMap::GenerateImpassableObstacles(FPCGDelaunayTriangulation &inTriangulation)
+{
+	ImpassableRegions.Reset();
+	for (int32 i = 0; i < inTriangulation.Triangles.Num(); i++)
+	{
+		for (auto Vert : DenyVerts)
+		{
+			if (inTriangulation.Triangles[i] == Vert)
+			{
+				ImpassableRegions.Add(inTriangulation.TriangleOfEdge(i));
+			}
+		}
+	}
 }

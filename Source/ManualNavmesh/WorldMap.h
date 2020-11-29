@@ -22,14 +22,11 @@ public:
 	float GetHeightAt(float X, float Y);
 	void MakeNoise();
 
+	// triangulation including height changes upon which paths are mapped
 	UPROPERTY()
 	FPCGDelaunayTriangulation Triangulation;
-	/*UPROPERTY()
-	TArray<FVector2D> Coords;
 	UPROPERTY()
-	TArray<int32> Triangles;
-	UPROPERTY()
-	TArray<int32> HalfEdges;*/
+	TArray<float> CoordHeights;
 
 	FVector GetMin() const;
 	FVector GetMax() const;
@@ -37,12 +34,17 @@ public:
 
 	const TSet<int32>& GetImpassableRegions() const;
 
+	FPCGDelaunayTriangulation& GetTPATriangulation();
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
 	TSet<int32> ImpassableRegions;
+
+	// Minimal triangulation used for pathfinding using TPAStar
+	UPROPERTY()
+	FPCGDelaunayTriangulation MinimumTriangulation;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
 	int32 RandomPointCount;
@@ -52,8 +54,60 @@ protected:
 	FVector Min;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
 	FVector Max;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	float Scale;
 
+	// How many obstacle regions will be created
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	int32 ObstacleChunks;
 
+	// The chance for any given chunk to contain an obstacle
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	float ObstacleProbability;
+
+	// How much of the region can be taken up by the outer obstacle
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	float ObstacleOuterRatio;
+
+	// How much of the region can be taken up by the inner obstacle
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	float ObstacleInnerRatio;
+
+	// How high the outer obstacle points will be
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	float ObstacleOuterHeight;
+
+	// How high the inner obstacle points will be
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	float ObstacleInnerHeight;
+
+	// How many points the obstacle can have. Minimum is 3
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	int32 ObstacleMaxVerts;
+
+	// Whether to have heights for obstacles or simulate a flat map
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	bool bSetFlatObstacles;
+
+	// Whether to remove impassable triangles from the triangulation by setting
+	// them to have no points and no edges, and removing the edges from adjacents.
+	// Will not change the memory allocation so consumers will need to check
+	// ValidTriangle() before operating on each triangle
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	bool bDeleteObstacleTriangles;
+
+	// Whether to remove impassable triangles from the triangulation by setting
+	// them to have no points and no edges, and removing the edges from adjacents.
+	// A second navmesh will be created with the height changes included that can
+	// be projected upon using the TPAS path
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
+	bool bUseTPAStar;
+
+	void GenerateObstacles(int32 Chunks, TArray<FVector2D>& Points, TArray<float>& Heights, bool SetFlatObstacles);
+	void GenerateImpassableObstacles(FPCGDelaunayTriangulation &inTriangulation);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WorldMapMesh")
+	float DebugHeight;
 	UPROPERTY()
 	UFastNoise* Noise;
 
@@ -96,6 +150,8 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WorldMapNoise")
 	ECellularReturnType CellularReturnType = ECellularReturnType::CellValue;
 
+	UPROPERTY()
+	TArray<int32> DenyVerts;
 public:	
 
 	UFUNCTION(BlueprintCallable, Category = "WorldMap")

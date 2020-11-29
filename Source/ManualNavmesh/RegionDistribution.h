@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "RegionDistribution.generated.h"
 
+typedef TArray<int32, TInlineAllocator<3>> TriangleNeighbours;
+
 USTRUCT(BlueprintType)
 struct MANUALNAVMESH_API FPCGDelaunayTriangulation
 {
@@ -31,6 +33,36 @@ public:
 	TArray<int32> Triangles;
 	UPROPERTY()
 	TArray<int32> HalfEdges;
+
+	void RemoveTriangle(int32 Triangle);
+	void DeepRemoveTriangle(int32 Triangle);
+	void ReplaceTriangle(int32 Triangle, int32 P1, int32 P2, int32 P3, int32 E1, int32 E2, int32 E3);
+	bool ValidTriangle(int32 Triangle) const;
+
+
+	int32 GetCommonEdge(int32 Triangle1, int32 Triangle2);
+	bool HasEdge(int32 Edge, int32 Triangle2);
+	bool PointLiesOnEdge(int32 Edge, int32 Point);
+	bool PointLiesOnEdge(int32 Edge, FVector2D Point);
+	
+	bool IsInCounterClockwiseDirectionFrom(FVector2D A, FVector2D B);
+	bool IsInClockwiseDirectionFrom(FVector2D A, FVector2D B);
+	TriangleNeighbours GetTriangleNeighbours(int32 Triangle);
+	bool IsInTriangle(FVector2D Point, int32 Triangle, bool bInclusive = true) const;
+	FVector2D ClosestPointOnEdge(FVector2D Point, int32 Edge);
+	float DistanceFromEdge(FVector2D Point, int32 Edge);
+
+	int32 TestPointInTriangle(int32 Triangle, FVector2D Point) const;
+
+	int32 GetLastValidTriangle(int32 CurrentLast = -1);
+	void SwapTriangles(int32 Tri1, int32 Tri2);
+	void CleanupRemovals();
+	void Reset()
+	{
+		Coords.Reset();
+		Triangles.Reset();
+		HalfEdges.Reset();
+	};
 };
 
 UCLASS()
@@ -48,7 +80,7 @@ public:
 	static void DrawTriangle(UObject* WorldContextObject, int32 Index, const FPCGDelaunayTriangulation& Triangulation, float Inset, int32 Label);
 
 	static bool SegmentIntersectionTest(const FVector2D& SegmentStartA, const FVector2D& SegmentEndA, const FVector2D& SegmentStartB, const FVector2D& SegmentEndB);
-	static bool IsInTriangle(FVector2D P, const FVector2D& A, const FVector2D& B, const FVector2D& C);
+	static bool IsInTriangle(FVector2D P, const FVector2D& A, const FVector2D& B, const FVector2D& C, bool bInclusive = false);
 	static FVector GetBaryCentric2D(const FVector2D& Point, const FVector2D& A, const FVector2D& B, const FVector2D& C);
 
 	static bool BoundsIntersectsSegment(const FBox2D& Bounds, const FVector2D& A, const FVector2D& B);

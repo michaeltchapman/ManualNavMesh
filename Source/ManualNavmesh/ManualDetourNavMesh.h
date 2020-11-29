@@ -142,6 +142,30 @@ class MANUALNAVMESH_API AManualDetourNavMesh : public ARecastNavMesh
 public:
 	AManualDetourNavMesh();
 
+	//UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh", meta = (WorldContext="WorldContextObject"))
+	//static UNavigationPath* FindCorridorPathToLocationSynchronously(UObject* WorldContextObject, const FVector& PathStart, const FVector& PathEnd, AActor* PathfindingContext, TSubclassOf<UNavigationQueryFilter> FilterClass);
+
+	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh")
+	bool FindOptimalPathToLocation(FVector2D Start, FVector2D Goal, UPARAM(ref) TArray<FVector2D>& Path, UPARAM(ref) TArray<FVector>& SurfacePath);
+
+	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh")
+	bool PathToTriangulationSurfacePath(TArray<FVector2D> &Path, UPARAM(ref) TArray<FVector>& SurfacePath, UPARAM(ref) FPCGDelaunayTriangulation &SurfaceTriangulation,UPARAM(ref)  TArray<float> &SurfaceHeights);
+
+	FPathFindingResult FindCorridorPathToLocation(FVector Start, FVector Goal, FPathFindingQuery& Query) const;
+
+	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh", meta = (WorldContext="WorldContextObject"))
+	static UNavigationPath* FindManualPath(UObject* WorldContextObject, const FVector& PathStart, const FVector& PathEnd, AActor* PathfindingContext, TSubclassOf<UNavigationQueryFilter> FilterClass, bool bOptimal = false, bool bCorridor = false);
+
+	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh", meta = (WorldContext="WorldContextObject"))
+	static bool PathToSurfacePath(UNavigationPath* Path, UPARAM(ref) TArray<FVector>& SurfacePath);
+
+
+	static bool PathCorridorToSurfacePath(UPARAM(ref) const TArray<struct FNavPathPoint> &Path, UPARAM(ref) const TArray<FNavigationPortalEdge> &Corridor, UPARAM(ref) TArray<FVector>& SurfacePath);
+	static float GetRatioFromTriSegment(FVector P, FVector A, FVector B, float Tolerance = 0.01f);
+
+	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh")
+	bool FindTPAPath(FVector2D Start, FVector2D End, UPARAM(ref) TArray<FVector2D>& OutPath) const;
+
 	UFUNCTION(BlueprintCallable, Category = "ManualRecastNavMesh")
 	static AManualDetourNavMesh* GetManualRecastNavMesh(UObject* Context);
 
@@ -179,11 +203,11 @@ protected:
 	FString CornerString(FPCGTriCorners& Corners);
 
 	// Create the triangle TriIndex
-	int32 ProcessTriangle(const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation,
-		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+	int32 ProcessTriangle(const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation, const TArray<float> &CoordHeights,
+		TArray<FVector> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
 
 	// Add relevant point to TmpVerts and mapping to InternalVerts, ignore points outside bounds
-	FPCGTriPoint ProcessPoint(int32 PointIndex, const FBox2D& Bounds, const TArray<FVector2D>& Coords, TArray<FVector2D>& TmpVerts, TMap<int32, FPCGTriPoint>& InternalVerts);
+	FPCGTriPoint ProcessPoint(int32 PointIndex, const FBox2D& Bounds, const TArray<FVector2D>& Coords, const TArray<float> &CoordHeights, TArray<FVector>& TmpVerts, TMap<int32, FPCGTriPoint>& InternalVerts);
 
 	//typedef TTuple<FPCGTriPoint*, bool> TriPointType;
 	//typedef TTuple<FPCGTriPoint*, FPCGTriPointMapping> TriPointType;
@@ -191,14 +215,14 @@ protected:
 	typedef TArray<TriPointType, TInlineAllocator<6>> TriPointArray;
 	//typedef TArray<TTuple<FPCGTriPoint*, bool>, TInlineAllocator<6>> TriPointArray;
 
-	void PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
-		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const FBox2D &Bounds);
+	void PlacePoints(int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const TArray<float> &CoordHeights, const FBox2D &Bounds);
 
-	bool PlaceCorners(int32 &PlaceIndex, TriPointType& CurrentPoint, TriPointType& NextPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector2D>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
-		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const FBox2D &Bounds);
+	bool PlaceCorners(int32 &PlaceIndex, TriPointType& CurrentPoint, TriPointType& NextPoint, int32 PolyIndex, int32 TriIndex, TriPointArray& PointsToPlace, TArray<FVector>& TmpVerts, TArray<unsigned short>& TmpPolys, TMap<int32, FPCGTriPoint>& InternalVerts,
+		TMap<int32, FPCGTriPoint>& HalfEdgeVerts, FPCGTriCorners& Corners, const FPCGDelaunayTriangulation& Triangulation, const TArray<float> &CoordHeights, const FBox2D &Bounds);
 
 	unsigned short GetAdjacentPoly(const FPCGDelaunayTriangulation& Triangulation, int32 TriIndex, TriPointType& CurrentPoint, TriPointType& NextPoint);
-	FVector2D CornerEdgeToVert(EPCGTriPoint CornerEdge, const FBox2D& Bounds);
+	FVector CornerEdgeToVert(EPCGTriPoint CornerEdge, const FBox2D& Bounds, int32 TriIndex, const FPCGDelaunayTriangulation &Triangulation, const TArray<float> &CoordHeights);
 	EPCGTriMember GetConnectingEdge(EPCGTriMember P1, EPCGTriMember P2);
 	unsigned short ConnectingEdgeToOffset(EPCGTriMember Edge);
 	bool ReverseEdgeCheck(EPCGTriMember E1, EPCGTriMember E2);
@@ -217,14 +241,15 @@ protected:
 	bool IsEdge(EPCGTriMember Member);
 	bool IsPoint(EPCGTriMember Member);
 
-	void ProcessEdge(FPCGTriPoint &Edge1, FPCGTriPoint &Edge2, int32 EdgeIndex, const FPCGTriPoint &A, const FPCGTriPoint &B, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
-		TArray<FVector2D> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+	void ProcessEdge(int32 TriIndex, FPCGTriPoint &Edge1, FPCGTriPoint &Edge2, int32 EdgeIndex, const FPCGTriPoint &A, const FPCGTriPoint &B, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation, const TArray<float> &CoordHeights,
+		TArray<FVector> &TmpVerts, TArray<unsigned short> &TmpPolys, int32 &CurrentPoly, TMap<int32, FPCGTriPoint> &InternalVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
 
-	void ColinearEdgeCheck(FPCGTriPoint &Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D &VA, FVector2D &VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
-		TArray<FVector2D> &TmpVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+	void ColinearEdgeCheck(int32 TriIndex, FPCGTriPoint &Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D &VA, FVector2D &VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation, const TArray<float> &CoordHeights,
+		TArray<FVector> &TmpVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
 
-	void IntersectingEdgeCheck(FPCGTriPoint &Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D &VA, FVector2D &VB, const FBox2D& Bounds, const FPCGDelaunayTriangulation &Triangulation,
-		TArray<FVector2D> &TmpVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+	void IntersectingEdgeCheck(int32 TriIndex, FPCGTriPoint &Edge, int32 EdgeIndex, const FPCGTriPoint &PA, const FPCGTriPoint &PB, FVector2D &VA, FVector2D &VB, const FBox2D& Bounds,
+		const FPCGDelaunayTriangulation &Triangulation, const TArray<float> &CoordHeights,
+		TArray<FVector> &TmpVerts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
 
 	bool TriangleRelevanceCheck(const FVector2D& A, const FVector2D& B, const FVector2D& C, const FBox2D& Bounds);
 
@@ -235,6 +260,11 @@ protected:
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
 	float DebugThickness;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
+	float EdgeHeightTolerance;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ManualDetour")
+	float BaryCentricTolerance;
+
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Detour")
 	float WalkableHeight;
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "Detour")
@@ -286,7 +316,8 @@ private:
 	FVector Min;
 	FVector Max;
 
-	void AddHalfEdgeTempVert(FVector2D Location, FPCGTriPoint& Point, int32 EdgeIndex, EPCGTriPoint Type, TArray<FVector2D> &Verts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts);
+	void AddHalfEdgeTempVert(FVector2D Location, FPCGTriPoint& Point, int32 TriIndex,  int32 EdgeIndex, EPCGTriPoint Type, TArray<FVector> &Verts, TMap<int32, FPCGTriPoint> &HalfEdgeVerts,
+		const FPCGDelaunayTriangulation &Triangulation, const TArray<float> &CoordHeights, const FBox2D &Bounds, FVector2D &VA, FVector2D &VB);
 	bool IsInternalSegment(const FPCGTriPoint& A, const FPCGTriPoint& B);
 
 	int32 GetHalfEdge(int32 Index, EPCGTriMember Member, const FPCGDelaunayTriangulation &Triangulation);
@@ -297,5 +328,12 @@ private:
 
 	int32 PointCount(FPCGTriPoint& EdgeAB, FPCGTriPoint& EdgeBA, FPCGTriPoint& EdgeBC, FPCGTriPoint& EdgeCB, FPCGTriPoint& EdgeCA, FPCGTriPoint& EdgeAC, FPCGTriPoint& A, FPCGTriPoint& B, FPCGTriPoint& C, FPCGTriCorners& Corners);
 	int32 PointAccum(FPCGTriPoint& EdgeAB, FPCGTriCorners& Corners);
+
+	float GetHeightAtPointInTri(const FVector2D& P, const FPCGDelaunayTriangulation& Triangulation, int32 Triangle, const TArray<float>& CoordHeights); 
+	float GetHeightAtEdgePoint(const FVector2D& P, const FPCGDelaunayTriangulation& Triangulation, int32 Triangle, const TArray<float>& CoordHeights, const FBox2D &Bounds);
+
+	FVector GetRoundedBaryCentric(FVector2D Location, FVector A, FVector B, FVector C, float Tolerance);
+	bool ValidBaryCentric(float u, float v, float w);
+
 };
 	
