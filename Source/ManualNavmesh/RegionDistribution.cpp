@@ -123,15 +123,15 @@ int32 FPCGDelaunayTriangulation::TestPointInTriangle(int32 Triangle, FVector2D P
 {
 	if (Point == Coords[Triangles[Triangle * 3]])
 	{
-		return Triangles[Triangle*3];
+		return Triangle*3;
 	}
 	if (Point == Coords[Triangles[Triangle * 3+1]])
 	{
-		return Triangles[Triangle*3+1];
+		return Triangle*3+1;
 	}
 	if (Point == Coords[Triangles[Triangle * 3+2]])
 	{
-		return Triangles[Triangle*3+2];
+		return Triangle*3+2;
 	}
 	return -1;
 }
@@ -317,6 +317,32 @@ void FPCGDelaunayTriangulation::CleanupRemovals()
 	HalfEdges.SetNum((CurrentValidEnd + 1) * 3);
 }
 
+void FPCGDelaunayTriangulation::LogDumpToCSharpFormat(TSet<int32> &Exclusions)
+{
+	for (int32 i = 0; i < Coords.Num(); i++)
+	{
+		UE_LOG(LogManualNavMesh, Warning, TEXT("var v%d = new Vector(%f, %f);"), i, Coords[i].X, Coords[i].Y);
+	}
+
+	int32 TriIdx = 0;
+	FString TriStr = FString();
+
+	for (int32 i = 0; i < Triangles.Num() / 3; i++)
+	{
+		if (!Exclusions.Contains(i))
+		{
+			UE_LOG(LogManualNavMesh, Warning, TEXT("var t%d = new Triangle(v%d, v%d, v%d, %d);"), TriIdx, Triangles[3*i], Triangles[3*i + 1], Triangles[3*i + 2], TriIdx);
+
+			TriStr.AppendChar('t');
+			TriStr.AppendInt(TriIdx);
+			TriStr.AppendChar(',');
+			TriIdx++;
+		}
+	}
+
+	UE_LOG(LogManualNavMesh, Warning, TEXT("var triangles = new[] { %s };"), *TriStr);
+}
+
 void URegionDistribution::GenerateBoundedRandomPoints(int32 Count, FVector2D Min, FVector2D Max, UPARAM(ref) TArray<FVector2D>& OutPoints, int32 Seed)
 {
 	FRandomStream Random = FRandomStream(Seed);
@@ -362,7 +388,7 @@ void URegionDistribution::GenerateTriangulation(UPARAM(ref) TArray<FVector2D>& i
 }
 
 //void URegionDistribution::DrawTriangle(UObject* WorldContextObject, int32 Index, const TArray<FVector2D>& OutVerts, const TArray<int32>& Triangles, const TArray<int32>& HalfEdges, float Inset, int32 Label)
-void URegionDistribution::DrawTriangle(UObject* WorldContextObject, int32 Index, const FPCGDelaunayTriangulation &Triangulation, float Inset, int32 Label)
+void URegionDistribution::DrawTriangle(UObject* WorldContextObject, int32 Index, const FPCGDelaunayTriangulation& Triangulation, float Inset, int32 Label, FColor Color/* = FColor::White*/)
 {
 	if (WorldContextObject)
 	{
@@ -383,13 +409,13 @@ void URegionDistribution::DrawTriangle(UObject* WorldContextObject, int32 Index,
 				AManualDetourNavMesh::MoveToCentre(B, Centre, Inset);
 				AManualDetourNavMesh::MoveToCentre(C, Centre, Inset);
 
-				DrawDebugLine(World, A, B, FColor::White, true, 999.f, 0, Inset * 0.5f);
-				DrawDebugLine(World, C, B, FColor::White, true, 999.f, 0, Inset * 0.5f);
-				DrawDebugLine(World, A, C, FColor::White, true, 999.f, 0, Inset * 0.5f);
+				DrawDebugLine(World, A, B, Color, true, 999.f, 0, Inset * 0.5f);
+				DrawDebugLine(World, C, B, Color, true, 999.f, 0, Inset * 0.5f);
+				DrawDebugLine(World, A, C, Color, true, 999.f, 0, Inset * 0.5f);
 
 				if (Label >= 0)
 				{
-					DrawDebugString(World, Centre, FString::FromInt(Label), 0, FColor::White, 999.f);
+					DrawDebugString(World, Centre, FString::FromInt(Label), 0, Color, 999.f);
 				}
 			}
 		}

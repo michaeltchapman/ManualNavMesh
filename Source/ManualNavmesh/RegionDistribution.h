@@ -63,6 +63,17 @@ public:
 		Triangles.Reset();
 		HalfEdges.Reset();
 	};
+
+	void* Flags;
+
+	void LogDumpToCSharpFormat(TSet<int32> &Exlusions);
+
+	FPCGDelaunayTriangulation()
+		: Coords()
+		, Triangles()
+		, HalfEdges()
+		, Flags(nullptr)
+	{}
 };
 
 UCLASS()
@@ -77,7 +88,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "RegionDistribution")
 	static void GenerateTriangulation(UPARAM(ref) TArray<FVector2D>& inPoints, UPARAM(ref) FPCGDelaunayTriangulation& Triangulation);
 
-	static void DrawTriangle(UObject* WorldContextObject, int32 Index, const FPCGDelaunayTriangulation& Triangulation, float Inset, int32 Label);
+	static void DrawTriangle(UObject* WorldContextObject, int32 Index, const FPCGDelaunayTriangulation& Triangulation, float Inset, int32 Label, FColor Color = FColor::White);
 
 	static bool SegmentIntersectionTest(const FVector2D& SegmentStartA, const FVector2D& SegmentEndA, const FVector2D& SegmentStartB, const FVector2D& SegmentEndB);
 	static bool IsInTriangle(FVector2D P, const FVector2D& A, const FVector2D& B, const FVector2D& C, bool bInclusive = false);
@@ -94,4 +105,5 @@ public:
 	// - return 2 if both A and B are on the edge but isn't a corner
 	static int32 SegmentColinearWithBoundsPoints(const FBox2D& Bounds, const FVector2D& A, const FVector2D& B, bool& bColinear);
 	static int32 SegmentInternalColinearityCount(const FVector2D& Q, const FVector2D& R, const FVector2D& A, const FVector2D& B, bool bDirection, bool& bColinear);
+
 };

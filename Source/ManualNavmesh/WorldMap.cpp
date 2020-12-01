@@ -126,12 +126,31 @@ void AWorldMap::BuildMesh()
 			URegionDistribution::GenerateTriangulation(Points, MinimumTriangulation);
 			GenerateImpassableObstacles(MinimumTriangulation);
 
+			PathingFlags.Flags.AddZeroed(MinimumTriangulation.Triangles.Num() / 3);
+			FMemory::Memset(PathingFlags.Flags.GetData(),1, sizeof(int32) * MinimumTriangulation.Triangles.Num() / 3);
+
+			MinimumTriangulation.Flags = (void*)&PathingFlags;
 			for (auto Tri : ImpassableRegions)
 			{
-				MinimumTriangulation.DeepRemoveTriangle(Tri);
+				//MinimumTriangulation.DeepRemoveTriangle(Tri);
+				PathingFlags.Flags[Tri] = 0;
 			}
-			ImpassableRegions.Reset();
-			MinimumTriangulation.CleanupRemovals();
+			//ImpassableRegions.Reset();
+			//MinimumTriangulation.CleanupRemovals();
+			MinimumTriangulation.LogDumpToCSharpFormat(ImpassableRegions);
+
+			for (int32 i = 0; i < MinimumTriangulation.Triangles.Num() / 3; i++)
+			{
+				if (PathingFlags.CanTraverse(i))
+				{
+					URegionDistribution::DrawTriangle(this, i, MinimumTriangulation, 2.f, i);
+				}
+				else
+				{
+					URegionDistribution::DrawTriangle(this, i, MinimumTriangulation, 2.f, i, FColor::Red);
+				}
+			}
+
 
 			// Heightmap Triangulation
 			GenerateObstacles(ObstacleChunks, Points, CoordHeights, bSetFlatObstacles);

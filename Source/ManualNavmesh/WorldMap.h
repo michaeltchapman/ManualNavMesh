@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "FastNoise/FastNoise.h"
 #include "RegionDistribution.h"
+#include "RegionPathfinding.h"
 #include "WorldMap.generated.h"
 
 class UProceduralMeshComponent;
@@ -45,6 +46,10 @@ protected:
 	// Minimal triangulation used for pathfinding using TPAStar
 	UPROPERTY()
 	FPCGDelaunayTriangulation MinimumTriangulation;
+
+	// A traversability flag for each tri, > 0 means traversable
+	UPROPERTY()
+	FPCGPathfindingFlags PathingFlags;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "WorldMap")
 	int32 RandomPointCount;

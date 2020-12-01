@@ -3,6 +3,11 @@
 
 DEFINE_LOG_CATEGORY(LogUPCGTRegionPathfinding);
 
+bool FPCGPathfindingFlags::CanTraverse(int32 Region)
+{
+	return Flags[Region] > 0;
+}
+
 int32 FPCGTPAPath::GetCurrentTriangle() const
 {
 	return CurrentTriangle;
@@ -340,6 +345,11 @@ FPCGTPAPath FPCGTPAPath::BuildPartialPathTo(int32 Neighbour, FVector2D Goal)
 	TriangleNeighbours Neighbours = Triangulation->GetTriangleNeighbours(CurrentTriangle);
 	for (auto Triangle : Neighbours)
 	{
+		if (!FPCGTPAPathFinder::CanTraverse(*Triangulation, Neighbour))
+		{
+			continue;
+		}
+
 		if (Triangle == Neighbour)
 		{
 			bIsAdjacent = true;
@@ -382,7 +392,9 @@ void FPCGTPAPath::StepTo(int32 TargetTriangle, FVector2D Goal)
 {
 	CurrentEdge = Triangulation->GetCommonEdge(TargetTriangle, CurrentTriangle);
 	CurrentTriangle = TargetTriangle;
-	
+
+	UE_LOG(LogUPCGTRegionPathfinding, VeryVerbose, TEXT("Stepping over edge %d, tri %d"), CurrentEdge, CurrentTriangle);
+
 	Funnel.StepOver(CurrentEdge);
 	AlreadyBuiltPathLength = LengthOfBuiltPathInFunnel(Funnel.Path);
 	LengthOfShortestPathFromApexToEdge = GetLengthOfShortestPathFromApexToEdge(CurrentEdge, Funnel.Apex);
@@ -549,6 +561,15 @@ FPCGTPAPathFinder& FPCGTPAPathFinder::operator=(const FPCGTPAPathFinder& Other)
 	return *this;
 }
 
+bool FPCGTPAPathFinder::CanTraverse(const FPCGDelaunayTriangulation& Triangulation, int32 Triangle)
+{
+	if (Triangulation.Flags)
+	{
+		return static_cast<FPCGPathfindingFlags*>(Triangulation.Flags)->CanTraverse(Triangle);
+	}
+	return true;
+}
+
 void FPCGTPAPathFinder::CloneDoubleLL(const TDoubleLinkedList<FVector2D> &From, TDoubleLinkedList<FVector2D> &To)
 {
 	To.Empty();
@@ -591,7 +612,7 @@ bool FPCGTPAPathFinder::FindPath(const FVector2D& StartPoint, int32 StartTriangl
 	while ((OpenSet.Num() > 0) && !bDone)
 	{
 		Catch++;
-		if (Catch > 500)
+		if (Catch > 10000)
 		{
 			UE_LOG(LogUPCGTRegionPathfinding, Warning, TEXT("TPAStar hit break limit"));
 			break;
@@ -637,7 +658,11 @@ bool FPCGTPAPathFinder::FindPath(const FVector2D& StartPoint, int32 StartTriangl
 			else {
 				for (auto Neighbour : Triangulation->GetTriangleNeighbours(PartialPath.GetCurrentTriangle()))
 				{
-					//if (PartialPath.GetCurrentEdge() < 0 || !(PartialPath.GetCurrentEdge() == Triangulation->GetCommonEdge(Neighbour, PartialPath.GetCurrentTriangle())))
+					if (!CanTraverse(*Triangulation, Neighbour))
+					{
+						continue;
+					}
+
 					if (PartialPath.GetCurrentEdge() < 0 || !(Triangulation->HasEdge(PartialPath.GetCurrentEdge(), Neighbour)))
 					{
 						FPCGTPAPath PathToNeighbour = PartialPath.BuildPartialPathTo(Neighbour, Goal);
@@ -707,6 +732,7 @@ void FPCGTPAPathFinder::AddToOpenSet(const FPCGTPAPath & Path)
 {
 	if ((OpenSet.GetHead() == nullptr) || (OpenSet.GetHead()->GetValue().MinimalTotalCost() > Path.MinimalTotalCost()))
 	{
+		UE_LOG(LogUPCGTRegionPathfinding, VeryVerbose, TEXT("Added a Neighbour Path to beginning of open Set"));
 		OpenSet.AddHead(Path);
 	}
 	else {
@@ -716,7 +742,15 @@ void FPCGTPAPathFinder::AddToOpenSet(const FPCGTPAPath & Path)
 		{
 			TargetNode = TargetNode->GetNextNode();
 		}
-		OpenSet.InsertNode(Path, TargetNode == nullptr ? nullptr : TargetNode->GetNextNode());
+		if (TargetNode->GetNextNode() != nullptr)
+		{
+			UE_LOG(LogUPCGTRegionPathfinding, VeryVerbose, TEXT("Inserted a Neighbour Path to before path with current tri %d"), TargetNode->GetNextNode()->GetValue().GetCurrentTriangle());
+			OpenSet.InsertNode(Path, TargetNode == nullptr ? nullptr : TargetNode->GetNextNode());
+		}
+		else {
+			UE_LOG(LogUPCGTRegionPathfinding, VeryVerbose, TEXT("Added a Neighbour Path to end of open Set"));
+			OpenSet.AddTail(Path);
+		}
 	}
 }
 

@@ -155,11 +155,6 @@ bool AManualDetourNavMesh::FindOptimalPathToLocation(FVector2D Start, FVector2D 
 	// then use raycasts to get surface path along the height mesh based on the path from TPAStar
 	PathToTriangulationSurfacePath(Path, SurfacePath, SourceMap->Triangulation, SourceMap->CoordHeights);
 
-	/*for (auto& V : TPAPath)
-	{
-		Result.Add(FVector(V, 0.f));
-	}*/
-
 #ifdef WITH_EDITOR
 	const double timeend = FPlatformTime::Seconds();
 	UE_LOG(LogManualNavMesh, Verbose, TEXT("TPAPath length %d with surface path length %d found in %f seconds."), Path.Num(), SurfacePath.Num(), timeend - timestart);
@@ -235,20 +230,85 @@ bool AManualDetourNavMesh::PathToTriangulationSurfacePath(TArray<FVector2D>& Pat
 			return false;
 		}
 
+		// if the previous placed point was equal to a point on the triangulation then traversing edges naively won't
+		// work. Will need to search all triangles connected to the point instead of just neighbours since all of them will
+		// match on the wrong edge but only one will match with an unconnected edge
+		if (PointInTriangle >= 0)
+		{
+			// This will be the edge that goes from PointInTriangle to another point
+			int32 Point = Triangulation.Triangles[PointInTriangle];
+
+			// This will be the edge that goes from another point to PointInTriangle
+			int32 StartEdge = Triangulation.PrevHalfedge(PointInTriangle);
+
+			// Reset this now since the next point might also be a point on the triangulation
+			PointInTriangle = -1;
+
+			// Incoming tracks edges that go towards the point we're moving around (CurrentPoint)
+			int32 Incoming = StartEdge;
+			do {
+				int32 Tri = Triangulation.TriangleOfEdge(Incoming);
+
+				// Check if the next point on the path is inside this triangle or intersects with the edge that doesn't contain
+				// the previous Point (PointInTriangle)
+				if (Triangulation.IsInTriangle(Path[NextPathIdx], Tri))
+				{
+					UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("TPAPath to Surface projection added contained point CurrentTri %d, PreviousTri %d, SurfacePath.Num() %d, CurrentPathIdx %d"), CurrentTri, PreviousTri, SurfacePath.Num(), CurrentPathIdx);
+					SurfacePath.Add(FVector(Path[NextPathIdx], GetHeightAtPointInTri(Path[NextPathIdx], Triangulation, Tri, SurfaceHeights)));
+
+					if (CurrentTri == EndTriangle)
+					{
+						return true;
+					}
+
+					// The next point we just added might have the same problem
+					PointInTriangle = Triangulation.TestPointInTriangle(Tri, Path[NextPathIdx]);
+					if (PointInTriangle >= 0)
+					{
+						UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("TPAPath to Surface projection added a point %d that was on the corner of triangle %d. Next search will be around a point instead of across an edge"), PointInTriangle, CurrentTri);
+					}
+
+					PreviousTri = CurrentTri;
+					CurrentTri = Tri;
+					CurrentPathIdx++;
+					NextPathIdx++;
+					CurrentPathPoint = FVector(Path[CurrentPathIdx], 0.f);
+					NextPathPoint = FVector(Path[NextPathIdx], 0.f);
+					break;
+				}
+
+				// Check if the next point on the path intersects with the edge that doesn't contain
+				// the previous Point (PointInTriangle)
+				int32 OppositeEdge = Triangulation.PrevHalfedge(Incoming);
+				int32 Ei1 = Triangulation.Triangles[OppositeEdge];
+				int32 Ei2 = Triangulation.Triangles[Incoming];
+				FVector Edge1 = FVector(Triangulation.Coords[Ei1], SurfaceHeights[Ei1]);
+				FVector Edge2 = FVector(Triangulation.Coords[Ei2], SurfaceHeights[Ei2]);
+				if (FMath::SegmentIntersection2D(Edge1, Edge2, CurrentPathPoint, NextPathPoint, IntersectionPoint))
+				{
+					SurfacePath.Add(IntersectionPoint);
+					PreviousTri = CurrentTri;
+					CurrentTri = Tri;
+					break;
+				}
+		
+				// Move to the next triangle around this point
+				int32 Outgoing = Triangulation.NextHalfedge(Incoming);
+				Incoming = Triangulation.HalfEdges[Outgoing];
+			} while (Incoming != -1 && Incoming != StartEdge);
+		}
+
 		// See if the next path point is in this triangle, and increment the path if so
-		if (Triangulation.IsInTriangle(Path[NextPathIdx], CurrentTri))
+		else if (Triangulation.IsInTriangle(Path[NextPathIdx], CurrentTri))
 		{
 			UE_LOG(LogManualNavMesh, VeryVerbose, TEXT("TPAPath to Surface projection added contained point CurrentTri %d, PreviousTri %d, SurfacePath.Num() %d, CurrentPathIdx %d"), CurrentTri, PreviousTri, SurfacePath.Num(), CurrentPathIdx);
 			SurfacePath.Add(FVector(Path[NextPathIdx], GetHeightAtPointInTri(Path[NextPathIdx], Triangulation, CurrentTri, SurfaceHeights)));
 
 			if (CurrentTri == EndTriangle)
 			{
-				break;
+				return true;
 			}
 
-			// TODO if the previous placed point was equal to a point on the triangulation then traversing edges naively won't
-			// work. Will need to search all triangles connected to the point instead of just neighbours since all of them will
-			// match on the wrong edge but only one will match with an unconnected edge
 			PointInTriangle = Triangulation.TestPointInTriangle(CurrentTri, Path[NextPathIdx]);
 			if (PointInTriangle >= 0)
 			{

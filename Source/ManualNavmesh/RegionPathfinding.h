@@ -11,6 +11,18 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogUPCGTRegionPathfinding, Log, All);
 
+// This is just a little struct to store whether each region can be traversed
+USTRUCT()
+struct MANUALNAVMESH_API FPCGPathfindingFlags
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<int32> Flags;
+
+	bool CanTraverse(int32 Region);
+};
+
 USTRUCT()
 struct MANUALNAVMESH_API FPCGTriangleEvalResult
 {
@@ -179,6 +191,7 @@ struct MANUALNAVMESH_API FPCGTPAPathFinder
 	void AddToOpenSet(const FPCGTPAPath &Path);
 
 	static void CloneDoubleLL(const TDoubleLinkedList<FVector2D> &From, TDoubleLinkedList<FVector2D> &To);
+	static bool CanTraverse(const FPCGDelaunayTriangulation& Triangulation, int32 Triangle);
 
 	void DebugDraw(FVector2D Offset = FVector2D::ZeroVector) const;
 	void DebugLog() const;
