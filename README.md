@@ -17,4 +17,4 @@ Tested with Unreal 4.22 and 4.25
 
 ## Author
 
-Michael Chapman
+Michael Chapman 2020
